@@ -2,10 +2,6 @@
 import os
 import pandas as pd
 
-# os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-# TODO: had error `OMP: Error #15: Initializing libiomp5.dylib, but found libomp.dylib already initialized.`
-# TODO: for `stefutil` on macOS, not sure why
-
 
 if __name__ == '__main__':
     from stefutil import *
@@ -25,10 +21,8 @@ if __name__ == '__main__':
     # check_myca_eg()
 
     def check_stackoverflow():
-        import tensorflow_federated as tff
-        mic('before load')
+        import tensorflow_federated as tff  # installing on python3.10 fails
         dset = tff.simulation.datasets.stackoverflow.load_data()
-        mic(type(dset), len(dset))
         tr, vl, ts = dset
         mic(tr, vl, ts)
         mic(len(tr.client_ids))
