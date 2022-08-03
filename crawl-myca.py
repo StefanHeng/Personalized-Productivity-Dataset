@@ -17,12 +17,8 @@ if __name__ == '__main__':
         df = pd.read_csv(path)
         auth = df.iloc[0, :].to_dict()
         body = dict(email=auth['username'], password=auth['password'])
-        headers = {'Content-Type': 'application/json'}  # TODO: adding this makes parse error in response?
 
-        r = requests.post(
-            url=url, data=body,
-            # headers=headers
-        )
+        r = requests.post(url=url, data=body)
         mic(r)
         res = json.loads(r.text)
         mic(res)
@@ -30,7 +26,7 @@ if __name__ == '__main__':
         path_out = os.path.join('auth', 'myca', fnm)
         with open(path_out, 'w') as f:
             json.dump(res, f, indent=4)
-    # create_token()
+    create_token()
 
     def fetch_data_by_day():
         url = f'{base_url}/js/walker_run'
@@ -43,23 +39,23 @@ if __name__ == '__main__':
         path = os.path.join('auth', 'myca', 'user-ids.txt')
         with open(path, 'r') as f:
             user_ids = f.read().splitlines()
-            mic(user_ids)
         user_id = user_ids[0]
 
-        body = dict(
+        payload = dict(
             name='get_latest_day',
             nd=user_id,
             ctx=dict(
                 before_date='2022-08-01',
+                # before_date='2022-07-22',
                 show_report=1  # this must be 1 or otherwise the response will be empty
             )
         )
         r = requests.post(
-            url=url, data=body,
-            headers=dict(Authorization=f'token {token}')
+            url=url,
+            data=json.dumps(payload),  # otherwise, the payload is sent as lists for some unknown reason
+            headers={'Authorization': f'token {token}', 'Content-Type': 'application/json'}
         )
         mic(r)
         res = json.loads(r.text)
         mic(res)
-        print(res['stack_trace'])
     fetch_data_by_day()
