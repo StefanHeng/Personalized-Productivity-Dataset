@@ -1,6 +1,8 @@
 auth/
 .idea/
 .DS_Store
+test-lang.py
+myca-dataset/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
