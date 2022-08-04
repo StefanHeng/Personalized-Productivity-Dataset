@@ -1,4 +1,5 @@
 import os
+import math
 import json
 import glob
 import datetime
@@ -104,22 +105,9 @@ class DataWriter:
     def get_single(self, user_id: str, before_date: str, write_csv: bool = False) -> pd.DataFrame:
         entries = self.ac(user_id=user_id, before_date=before_date)
         df = pd.DataFrame([self._map_entry(*e) for e in entries])
-        # e = entries[0][1]  # Get arbitrary entry, for column ordering
-        # order = sorted(list(e.keys()))
-        # idx_ctx = order.index('context')
-        # order_ctx = [f'context.{k}' for k in sorted(list(e['context'].keys()))]
-        # # see `_map_entry`
-        # order = ['field1'] + order[:idx_ctx] + order_ctx + order[idx_ctx+1:]  # remove the `context` field
-        # mic(df.columns)
-        # mic(order)
-        # mic(df)
-        # mic(set(df.columns), set(order), set(df.columns)-set(order))
-        # mic(sorted(df.columns))
-        # assert set(df.columns) == set(order)
         order = sorted(list(df.columns))
         order.insert(0, order.pop(order.index('field1')))
         df = df[order]
-        mic(order)
         if write_csv:
             self.write_single(user_id=user_id, date=before_date, df=df)
         return df
@@ -162,6 +150,25 @@ class DataWriter:
         return dt2df
 
 
+def _path2root(graph: Dict, start, target, curr_path: List) -> List:
+    children = graph[start]
+    if target in children:
+        curr_path.append(target)
+        return curr_path
+    else:
+        for c in children:
+            if c not in curr_path:  # Not necessary since tree
+                curr_path.append(c)
+                path = _path2root(graph, c, target, curr_path)
+                if path is not None:
+                    return path
+                curr_path.pop()
+
+
+def path2root(graph: Dict, root, target) -> List:
+    return _path2root(graph, root, target, [root])  # inclusive start & end
+
+
 class DataCleaner:
     """
     Clean up the raw data (see `DataWriter`) from a given date into our format
@@ -176,22 +183,71 @@ class DataCleaner:
         }
 
     def clean_single(self, data_path: str) -> pd.DataFrame:
+        """
+        Clean up raw data for a single date
+        """
         if not os.path.exists(data_path):
             data_path = os_join(self.dataset_path, data_path)
         df = pd.read_csv(data_path)
         mic(df)
-        mic(df.iloc[0])
+        root = df.iloc[0]
+        root_id = root['jid']
 
-        def map_single(arr: pd.Series) -> Dict:
+        def map_single(entry: pd.Series) -> pd.Series:
             # assert uid == user_id and user_id == entry['jid']
-            # return dict(
-            #     context_name=entry['context']['name'],
-            #     context_note=entry['context']['note'],
-            #     j_timestamp=entry['j_timestamp'],
-            #     j_type=entry['j_type'],
-            #     kind=entry['kind'],
-            #     name=entry['name']
-            # )
+            return pd.Series(dict(
+                text=entry['context.name'],  # actual text for the action entry
+                note=entry['context.note'],
+                link=entry['context.links'],
+                creation_time=entry['j_timestamp'],
+                type=entry['context.wtype'],  # UI type of the entry
+                id=entry['jid'],  # id of the action entry
+                parent_id=entry['field1']  # by API call design
+            ))
+        df = df.apply(map_single, axis=1)
+        mic(df)
+
+        # build the hierarchy for entry groups, as graph/tree represented with adjacency list
+        # note iteration order is preserved
+        g: Dict[str, List[str]] = {root_id: []}
+        for _, row in df.iloc[1:].iterrows():  # note 1st row is special, not an actual entry
+            id_, pid = row.id, row.parent_id
+            added = False
+            for parent in g:
+                if parent == pid:
+                    g[parent].append(id_)
+                    g[id_] = []
+                    added = True
+                    break
+            if not added:  # should not happen, assuming API returns in correct order
+                raise ValueError(f'Parent for node with id={logi(id_)} not found')
+        mic(g)
+
+        def id2txt(i_: str) -> str:
+            txts = df.loc[df.id == i_, 'text'].values
+            assert len(txts) == 1
+            txt = txts[0]
+            if isinstance(txt, float) and math.isnan(txt):
+                return 'root'
+            else:
+                return txt
+        mic(id2txt(root_id))
+
+        g_ = {id2txt(k): [id2txt(i) for i in v] for k, v in g.items()}
+        mic(g_)
+
+        for k in g_:
+            path = path2root(g_, 'root', k)
+            # if path:
+            #     path = path[1:-1]  # exclusive
+            mic(k, path)
+
+        # tree = [id2txt(i) for i in g[root_id]]  # build a human-readable snapshot
+        # mic(tree)
+        tree = g[root_id]
+        it = iter(g.keys())
+        next(it)  # omit root node
+        for i in it:
             pass
 
 
@@ -202,7 +258,7 @@ if __name__ == '__main__':
         mic(user_id)
         entries = ac(user_id=user_id, before_date='2022-08-01')
         mic(entries)
-    # check_call()
+    check_call()
 
     def fetch_data_by_day():
         user_id = get_user_ids()[0]
@@ -211,21 +267,22 @@ if __name__ == '__main__':
         dw = DataWriter()
         df = dw.get_single(user_id=user_id, before_date=before_date)
         mic(df)
-    fetch_data_by_day()
+    # fetch_data_by_day()
 
-    def fetch_all():
+    def write_all():
         user_id = get_user_ids()[0]
         dw = DataWriter()
         # st = '2021-01-01'
         st = '2022-07-15'
         dw.get_all(user_id=user_id, start_date=st, end_date='2022-08-01', write_csv=True)
-    # fetch_all()
+    # write_all()
 
     def clean_up():
-        path = os_join('myca-dataset', 'raw, 2022-08-04_14-34-34')
+        dnm = 'raw, 2022-08-04_15-26-59'
+        path = os_join('myca-dataset', dnm)
         dc = DataCleaner(dataset_path=path)
         user_id = dc.user_ids[0]
         date = dc.uid2dt[user_id][-1]
         fnm = os_join(user_id, f'{date}.csv')
         dc.clean_single(data_path=fnm)
-    # clean_up()
+    clean_up()
