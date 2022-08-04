@@ -1,7 +1,9 @@
 import os
 import json
+import glob
 import datetime
 import requests
+from os.path import join as os_join
 from typing import List, Tuple, Dict
 
 import pandas as pd
@@ -25,7 +27,7 @@ class ApiCaller:
         self.verbose = verbose
 
         if save_token:
-            credential_path = os.path.join('auth', 'myca', credential_fnm)
+            credential_path = os_join('auth', 'myca', credential_fnm)
             df = pd.read_csv(credential_path)
             auth = df.iloc[0, :].to_dict()
             payload = dict(email=auth['username'], password=auth['password'])
@@ -33,7 +35,7 @@ class ApiCaller:
             res = requests.post(url=ApiCaller.init_url, data=payload)
             res = json.loads(res.text)
             fnm = f'{now(for_path=True)}-admin-token.json'
-            path_out = os.path.join('auth', 'myca', fnm)
+            path_out = os_join('auth', 'myca', fnm)
             with open(path_out, 'w') as f:
                 json.dump(res, f, indent=4)
             if self.verbose:
@@ -42,7 +44,7 @@ class ApiCaller:
     def __call__(
             self, user_id: str, before_date: str, token_fnm: str = '2022-08-02_15-36-01-admin-token.json'
     ) -> List[Tuple[str, Dict]]:
-        token_path = os.path.join('auth', 'myca', token_fnm)
+        token_path = os_join('auth', 'myca', token_fnm)
         with open(token_path) as f:
             token = json.load(f)['token']
 
@@ -72,7 +74,7 @@ class ApiCaller:
         return res['report']
 
 
-def get_user_ids(path: str = os.path.join('auth', 'myca', 'user-ids.txt')) -> List[str]:
+def get_user_ids(path: str = os_join('auth', 'myca', 'user-ids.txt')) -> List[str]:
     with open(path, 'r') as f:
         # keeping the prefix still works, but not friendly to file system
         return [i.removeprefix('urn:uuid:') for i in f.read().splitlines()]
@@ -82,7 +84,7 @@ class DataWriter:
     """
     Writes raw action entries per day returned from myca API calls for a given user
     """
-    def __init__(self, output_path: str = os.path.join('myca-dataset', f'raw, {now(for_path=True)}')):
+    def __init__(self, output_path: str = os_join('myca-dataset', f'raw, {now(for_path=True)}')):
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
 
@@ -93,24 +95,31 @@ class DataWriter:
         """
         Store every possible field returned from the API call
         """
-        #     assert uid == user_id and user_id == entry['jid']
-        #     return dict(
-        #         context_name=entry['context']['name'],
-        #         context_note=entry['context']['note'],
-        #         j_timestamp=entry['j_timestamp'],
-        #         j_type=entry['j_type'],
-        #         kind=entry['kind'],
-        #         name=entry['name']
-        #     )
         d = dict(field1=f1)
-        d_cont = entry.pop('context')
-        d.update({f'context.{k}': v for k, v in d_cont.items()})
-        d.update(entry)
+        # note the 1st element is unique, with different set of keys compared to subsequent, actual action entries
+        d.update({f'context.{k}': v for k, v in entry['context'].items()})
+        d.update({k: v for k, v in entry.items() if k != 'context'})
         return d
 
     def get_single(self, user_id: str, before_date: str, write_csv: bool = False) -> pd.DataFrame:
         entries = self.ac(user_id=user_id, before_date=before_date)
         df = pd.DataFrame([self._map_entry(*e) for e in entries])
+        # e = entries[0][1]  # Get arbitrary entry, for column ordering
+        # order = sorted(list(e.keys()))
+        # idx_ctx = order.index('context')
+        # order_ctx = [f'context.{k}' for k in sorted(list(e['context'].keys()))]
+        # # see `_map_entry`
+        # order = ['field1'] + order[:idx_ctx] + order_ctx + order[idx_ctx+1:]  # remove the `context` field
+        # mic(df.columns)
+        # mic(order)
+        # mic(df)
+        # mic(set(df.columns), set(order), set(df.columns)-set(order))
+        # mic(sorted(df.columns))
+        # assert set(df.columns) == set(order)
+        order = sorted(list(df.columns))
+        order.insert(0, order.pop(order.index('field1')))
+        df = df[order]
+        mic(order)
         if write_csv:
             self.write_single(user_id=user_id, date=before_date, df=df)
         return df
@@ -119,11 +128,11 @@ class DataWriter:
         if df is None:
             df = self.get_single(user_id=user_id, before_date=date)
         if group_by_user:
-            path = os.path.join(self.output_path, user_id)
+            path = os_join(self.output_path, user_id)
             os.makedirs(path, exist_ok=True)
-            path = os.path.join(path, f'{date}.csv')
+            path = os_join(path, f'{date}.csv')
         else:
-            path = os.path.join(self.output_path, f'{user_id}-{date}.csv')
+            path = os_join(self.output_path, f'{user_id}-{date}.csv')
         df.to_csv(path, index=False)
 
     def get_all(self, user_id: str, start_date: str, end_date: str, write_csv: bool = False) -> Dict[str, pd.DataFrame]:
@@ -153,6 +162,39 @@ class DataWriter:
         return dt2df
 
 
+class DataCleaner:
+    """
+    Clean up the raw data (see `DataWriter`) from a given date into our format
+    """
+    def __init__(self, dataset_path: str):
+        self.dataset_path = dataset_path
+        # folder name is user id, see `DataWriter`
+        self.user_ids = [stem(f) for f in sorted(glob.iglob(os_join(dataset_path, '*')))]
+        self.uid2dt: Dict[str, List[str]] = {
+            uid: [stem(f) for f in sorted(glob.glob(os_join(dataset_path, uid, '*.csv')))]
+            for uid in self.user_ids
+        }
+
+    def clean_single(self, data_path: str) -> pd.DataFrame:
+        if not os.path.exists(data_path):
+            data_path = os_join(self.dataset_path, data_path)
+        df = pd.read_csv(data_path)
+        mic(df)
+        mic(df.iloc[0])
+
+        def map_single(arr: pd.Series) -> Dict:
+            # assert uid == user_id and user_id == entry['jid']
+            # return dict(
+            #     context_name=entry['context']['name'],
+            #     context_note=entry['context']['note'],
+            #     j_timestamp=entry['j_timestamp'],
+            #     j_type=entry['j_type'],
+            #     kind=entry['kind'],
+            #     name=entry['name']
+            # )
+            pass
+
+
 if __name__ == '__main__':
     def check_call():
         ac = ApiCaller()
@@ -169,7 +211,7 @@ if __name__ == '__main__':
         dw = DataWriter()
         df = dw.get_single(user_id=user_id, before_date=before_date)
         mic(df)
-    # fetch_data_by_day()
+    fetch_data_by_day()
 
     def fetch_all():
         user_id = get_user_ids()[0]
@@ -177,4 +219,13 @@ if __name__ == '__main__':
         # st = '2021-01-01'
         st = '2022-07-15'
         dw.get_all(user_id=user_id, start_date=st, end_date='2022-08-01', write_csv=True)
-    fetch_all()
+    # fetch_all()
+
+    def clean_up():
+        path = os_join('myca-dataset', 'raw, 2022-08-04_14-34-34')
+        dc = DataCleaner(dataset_path=path)
+        user_id = dc.user_ids[0]
+        date = dc.uid2dt[user_id][-1]
+        fnm = os_join(user_id, f'{date}.csv')
+        dc.clean_single(data_path=fnm)
+    # clean_up()
