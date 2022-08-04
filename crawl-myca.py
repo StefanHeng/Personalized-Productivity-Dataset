@@ -210,6 +210,7 @@ class DataCleaner:
             type=entry['context.wtype'],  # UI type of the entry
             parent_id=entry['field1']  # by API call design
         ))
+
     @staticmethod
     def _cleaned_df2graph(df: pd.DataFrame):
         """
@@ -232,13 +233,12 @@ class DataCleaner:
                 raise ValueError(f'Parent for node with id={logi(id_)} not found')
         return graph
 
-    def clean_single(self, data_path: str, save: bool = False) -> pd.DataFrame:
+    def clean_single(self, data_path: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
         """
         Clean up raw data for a single date
         """
         df = pd.read_csv(os_join(self.dataset_path, data_path))
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
-        mic(df)
 
         root_id = df.loc[0, 'id']
         graph = DataCleaner._cleaned_df2graph(df)
@@ -259,7 +259,13 @@ class DataCleaner:
             # a human-readable snapshot
             tree=dict(id=readable_tree(graph, root_id), name=readable_tree(graph_txt, id2txt(root_id)))
         )
-        mic(meta)
+        meta['path-exclusive'] = {
+            typ: {k: v[1:-1] if v else None for k, v in meta['path'][typ].items()}
+            for typ in meta['path']
+        }
+        # note since label based on path, the order in label list implies nested level
+        id2lbs = {k: [id2txt(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
+        df['labels'] = df.id.apply(lambda i: id2lbs[i])
 
         if save:
             if os.sep in data_path:
@@ -270,7 +276,20 @@ class DataCleaner:
             out_path = out_path.removesuffix('.csv') + '.json'
             with open(out_path, 'w') as f:
                 json.dump(meta, f, indent=4)
-        return df
+        return df, meta
+
+    def clean_all(self, user_id: str, save: bool = False) -> List[Tuple[pd.DataFrame, Dict]]:
+        """
+        Clean up raw data for a single user
+        """
+        dates = self.uid2dt[user_id]
+        it = tqdm(dates, desc=f'Cleaning up user {logi(user_id)}', unit='date')
+        ret = []
+        for d in it:
+            it.set_postfix(date=logi(d))
+            fnm = os_join(user_id, f'{d}.csv')
+            ret.append(self.clean_single(fnm, save))
+        return ret
 
 
 if __name__ == '__main__':
@@ -304,7 +323,16 @@ if __name__ == '__main__':
         path = os_join('myca-dataset', dnm)
         dc = DataCleaner(dataset_path=path)
         user_id = dc.user_ids[0]
-        date = dc.uid2dt[user_id][-1]
-        fnm = os_join(user_id, f'{date}.csv')
-        dc.clean_single(data_path=fnm, save=True)
+
+        def single():
+            date = dc.uid2dt[user_id][-1]
+            fnm = os_join(user_id, f'{date}.csv')
+            # sv = False
+            sv = True
+            dc.clean_single(data_path=fnm, save=sv)
+        # single()
+
+        def all_():
+            dc.clean_all(user_id=user_id, save=True)
+        all_()
     clean_up()
