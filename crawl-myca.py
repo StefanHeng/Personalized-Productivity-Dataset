@@ -5,6 +5,7 @@ import requests
 from typing import List, Tuple, Dict
 
 import pandas as pd
+from tqdm.auto import tqdm
 
 from stefutil import *
 
@@ -17,10 +18,11 @@ class ApiCaller:
     init_url = f'{base_url}/user/token/'
     call_url = f'{base_url}/js/walker_run'
 
-    def __init__(self, credential_fnm: str = 'admin-credential.csv', save_token: bool = False):
+    def __init__(self, credential_fnm: str = 'admin-credential.csv', save_token: bool = False, verbose: bool = True):
         self.logger = get_logger(self.__class__.__qualname__)
         # TODO: without this, logging message is duplicated for unknown reason in this project only
         self.logger.propagate = False
+        self.verbose = verbose
 
         if save_token:
             credential_path = os.path.join('auth', 'myca', credential_fnm)
@@ -34,7 +36,8 @@ class ApiCaller:
             path_out = os.path.join('auth', 'myca', fnm)
             with open(path_out, 'w') as f:
                 json.dump(res, f, indent=4)
-            self.logger.info(f'Admin token saved to {logi(path_out)}')
+            if self.verbose:
+                self.logger.info(f'Admin token saved to {logi(path_out)}')
 
     def __call__(
             self, user_id: str, before_date: str, token_fnm: str = '2022-08-02_15-36-01-admin-token.json'
@@ -56,35 +59,40 @@ class ApiCaller:
             )
         )
         args = dict(url=ApiCaller.call_url, headers=headers, data=json.dumps(payload))
-        self.logger.info(f'Making fetch data call with {logi(args)}... ')
+        if self.verbose:
+            self.logger.info(f'Making fetch data call with {logi(args)}... ')
         t_strt = datetime.datetime.now()
         res = requests.post(**args)
         t = fmt_delta(datetime.datetime.now() - t_strt)
-
-        self.logger.info(f'Got response in {logi(t)} with status {logi(res.status_code)}')
+        if self.verbose:
+            self.logger.info(f'Got response in {logi(t)} with status {logi(res.status_code)}')
         assert res.status_code == 200
         res = json.loads(res.text)
         assert res['success']
         return res['report']
 
 
-if __name__ == '__main__':
-    ac = ApiCaller()
+def get_user_ids(path: str = os.path.join('auth', 'myca', 'user-ids.txt')) -> List[str]:
+    with open(path, 'r') as f:
+        # keeping the prefix still works, but not friendly to file system
+        return [i.removeprefix('urn:uuid:') for i in f.read().splitlines()]
 
-    dset_out_path = os.path.join('myca-dataset', 'raw')
-    os.makedirs(dset_out_path, exist_ok=True)
 
-    def fetch_data_by_day(before_date: str):
-        path = os.path.join('auth', 'myca', 'user-ids.txt')
-        with open(path, 'r') as f:
-            user_ids = f.read().splitlines()
-        user_id = user_ids[0]
-        user_id = user_id.removeprefix('urn:uuid:')
-        mic(user_id)
+class DataWriter:
+    """
+    Writes raw action entries per day returned from myca API calls for a given user
+    """
+    def __init__(self, output_path: str = os.path.join('myca-dataset', f'raw, {now(for_path=True)}')):
+        self.output_path = output_path
+        os.makedirs(output_path, exist_ok=True)
 
-        entries = ac(user_id=user_id, before_date=before_date)
+        self.ac = ApiCaller(verbose=False)
 
-        # def map_entry(uid: str, entry: Dict) -> Dict:
+    @staticmethod
+    def _map_entry(f1: str, entry: Dict) -> Dict:
+        """
+        Store every possible field returned from the API call
+        """
         #     assert uid == user_id and user_id == entry['jid']
         #     return dict(
         #         context_name=entry['context']['name'],
@@ -94,19 +102,79 @@ if __name__ == '__main__':
         #         kind=entry['kind'],
         #         name=entry['name']
         #     )
+        d = dict(field1=f1)
+        d_cont = entry.pop('context')
+        d.update({f'context.{k}': v for k, v in d_cont.items()})
+        d.update(entry)
+        return d
 
-        def map_entry(f1: str, entry: Dict) -> Dict:
-            """
-            Store every possible field returned from the API call
-            """
-            d = dict(field1=f1)
-            d_cont = entry.pop('context')
-            d.update({f'context.{k}': v for k, v in d_cont.items()})
-            d.update(entry)
-            return d
+    def get_single(self, user_id: str, before_date: str, write_csv: bool = False) -> pd.DataFrame:
+        entries = self.ac(user_id=user_id, before_date=before_date)
+        df = pd.DataFrame([self._map_entry(*e) for e in entries])
+        if write_csv:
+            self.write_single(user_id=user_id, date=before_date, df=df)
+        return df
 
-        df = pd.DataFrame([map_entry(*e) for e in entries])
+    def write_single(self, user_id: str = None, date: str = None, df: pd.DataFrame = None, group_by_user: bool = True):
+        if df is None:
+            df = self.get_single(user_id=user_id, before_date=date)
+        if group_by_user:
+            path = os.path.join(self.output_path, user_id)
+            os.makedirs(path, exist_ok=True)
+            path = os.path.join(path, f'{date}.csv')
+        else:
+            path = os.path.join(self.output_path, f'{user_id}-{date}.csv')
+        df.to_csv(path, index=False)
+
+    def get_all(self, user_id: str, start_date: str, end_date: str, write_csv: bool = False) -> Dict[str, pd.DataFrame]:
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        dt2df: Dict[str, pd.DataFrame] = dict()
+        it = tqdm(dates, desc='Processing', unit='date')
+        n = 0
+        for d in it:
+            d = d.strftime('%Y-%m-%d')
+            it.set_postfix(dict(n=n, date_q=d))
+            df = self.get_single(user_id=user_id, before_date=d)
+            if not df.empty:
+                day = df.loc[0, 'context.day']
+                day = datetime.datetime.strptime(day, '%Y-%m-%dT%H:%M:%S')
+                assert day.hour == 0 and day.minute == 0 and day.second == 0
+                day = day.strftime('%Y-%m-%d')
+                it.set_postfix(dict(n=n, date_q=d, date_ret=day))
+                # Ensure no duplicates
+                if day not in dt2df:
+                    dt2df[day] = df
+                    n += 1
+                else:
+                    assert df.equals(dt2df[day])
+        if write_csv:
+            for d, df in dt2df.items():
+                self.write_single(user_id=user_id, date=d, df=df)
+        return dt2df
+
+
+if __name__ == '__main__':
+    def check_call():
+        ac = ApiCaller()
+        user_id = get_user_ids()[0]
+        mic(user_id)
+        entries = ac(user_id=user_id, before_date='2022-08-01')
+        mic(entries)
+    # check_call()
+
+    def fetch_data_by_day():
+        user_id = get_user_ids()[0]
+        before_date = '2022-08-01'
+
+        dw = DataWriter()
+        df = dw.get_single(user_id=user_id, before_date=before_date)
         mic(df)
-        df.to_csv(os.path.join(dset_out_path, f'{user_id}-{before_date}.csv'), index=False)
-    dt = '2022-08-01'
-    fetch_data_by_day(before_date=dt)
+    # fetch_data_by_day()
+
+    def fetch_all():
+        user_id = get_user_ids()[0]
+        dw = DataWriter()
+        # st = '2021-01-01'
+        st = '2022-07-15'
+        dw.get_all(user_id=user_id, start_date=st, end_date='2022-08-01', write_csv=True)
+    fetch_all()
