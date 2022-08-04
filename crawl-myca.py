@@ -5,7 +5,7 @@ import glob
 import datetime
 import requests
 from os.path import join as os_join
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union, Any
 
 import pandas as pd
 from tqdm.auto import tqdm
@@ -189,7 +189,6 @@ class DataCleaner:
         if not os.path.exists(data_path):
             data_path = os_join(self.dataset_path, data_path)
         df = pd.read_csv(data_path)
-        mic(df)
         root = df.iloc[0]
         root_id = root['jid']
 
@@ -242,13 +241,15 @@ class DataCleaner:
             #     path = path[1:-1]  # exclusive
             mic(k, path)
 
-        # tree = [id2txt(i) for i in g[root_id]]  # build a human-readable snapshot
-        # mic(tree)
-        tree = g[root_id]
-        it = iter(g.keys())
-        next(it)  # omit root node
-        for i in it:
-            pass
+        # build a human-readable snapshot, nested binary tuples of (name, children)
+        def build_node(name: str) -> Union[str, Tuple[str, List[Any]]]:
+            children = g_[name]
+            is_leaf = len(children) == 0
+            if is_leaf:
+                return name
+            else:
+                return name, [build_node(c) for c in children]
+        mic(build_node('root'))
 
 
 if __name__ == '__main__':
@@ -258,7 +259,7 @@ if __name__ == '__main__':
         mic(user_id)
         entries = ac(user_id=user_id, before_date='2022-08-01')
         mic(entries)
-    check_call()
+    # check_call()
 
     def fetch_data_by_day():
         user_id = get_user_ids()[0]
