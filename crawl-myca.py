@@ -152,35 +152,41 @@ class DataWriter:
 
 def _path2root(graph: Dict, start, target, curr_path: List) -> List:
     children = graph[start]
-    if target in children:
-        curr_path.append(target)
-        return curr_path
-    else:
-        for c in children:
-            if c not in curr_path:  # Not necessary since tree
-                curr_path.append(c)
-                path = _path2root(graph, c, target, curr_path)
-                if path is not None:
-                    return path
-                curr_path.pop()
+    if children:
+        if target in children:
+            curr_path.append(target)
+            return curr_path
+        else:
+            for c in children:
+                if c not in curr_path:  # Not necessary since tree
+                    curr_path.append(c)
+                    path = _path2root(graph, c, target, curr_path)
+                    if path:
+                        return path
+                    curr_path.pop()
 
 
 def path2root(graph: Dict, root, target) -> List:
     return _path2root(graph, root, target, [root])  # inclusive start & end
 
 
-def readable_tree(graph: Dict[str, List[str]], root: str) -> Union[str, Tuple[str, List[Any]]]:
+def readable_tree(graph: Dict[str, List[str]], root: str, parent_prefix: str = None) -> Union[str, Tuple[str, List[Any]]]:
     """
     :param graph: Adjacency list of a graph/tree
     :param root: Root node
+    :param parent_prefix: Needed for precision to differentiate inner & leaf nodes
+        Counter example: 2 nodes, A, B are neighbors of each other, A is leaf node, B is inner node
+        But they would appear as if A has a single child B
+        This is because Tuple is rendered as List in json
     :return: nested binary tuples of (name, children)
     """
     children = graph[root]
-    is_leaf = len(children) == 0
+    is_leaf = (not children) or len(children) == 0
     if is_leaf:
         return root
     else:
-        return root, [readable_tree(graph, c) for c in children]
+        p = f'{parent_prefix}_{root}' if parent_prefix else root
+        return p, [readable_tree(graph, c, parent_prefix=parent_prefix) for c in children]
 
 
 class DataCleaner:
@@ -191,7 +197,6 @@ class DataCleaner:
         self.dataset_path = dataset_path
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
-        mic(output_path)
         # folder name is user id, see `DataWriter`
         self.user_ids = [stem(f) for f in sorted(glob.iglob(os_join(dataset_path, '*')))]
         self.uid2dt: Dict[str, List[str]] = {
@@ -215,6 +220,7 @@ class DataCleaner:
     def _cleaned_df2graph(df: pd.DataFrame):
         """
         Build the hierarchy for entry groups, as graph/tree represented with adjacency list, i.e. node => children
+        Action items that definitely will not have any children will have value of None, instead of empty list
 
         .. note:: iteration order is preserved w.r.t the dataframe
         """
@@ -226,7 +232,9 @@ class DataCleaner:
             for parent in graph:
                 if parent == pid:
                     graph[parent].append(id_)
-                    graph[id_] = []
+                    can_have_child = row.type in ['workset', 'workette']  # types for root-level group, internal group
+                    # shouldn't raise an error on `append` if api call well-formed
+                    graph[id_] = [] if can_have_child else None
                     added = True
                     break
             if not added:  # should not happen, assuming API returns in correct order
@@ -251,18 +259,23 @@ class DataCleaner:
                 return 'root'
             else:
                 return txt
-        graph_txt = {id2txt(k): [id2txt(i) for i in v] for k, v in graph.items()}
+        graph_txt = {id2txt(k): ([id2txt(i) for i in v] if v else v) for k, v in graph.items()}
         path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
         meta = dict(
             graph=dict(id=graph, name=graph_txt),
-            path=dict(id=path, name={id2txt(k): [id2txt(i) for i in v] if v else None for k, v in path.items()}),
+            path=dict(id=path, name={id2txt(k): ([id2txt(i) for i in v] if v else v) for k, v in path.items()}),
             # a human-readable snapshot
-            tree=dict(id=readable_tree(graph, root_id), name=readable_tree(graph_txt, id2txt(root_id)))
+            tree=dict(
+                id=readable_tree(graph, root_id),
+                name=readable_tree(graph_txt, id2txt(root_id), parent_prefix='p')
+            )
         )
+        mic(meta['tree']['name'])
         meta['path-exclusive'] = {
             typ: {k: v[1:-1] if v else None for k, v in meta['path'][typ].items()}
             for typ in meta['path']
         }
+        mic(meta['path-exclusive']['name'])
         # note since label based on path, the order in label list implies nested level
         id2lbs = {k: [id2txt(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
         df['labels'] = df.id.apply(lambda i: id2lbs[i])
@@ -297,7 +310,7 @@ if __name__ == '__main__':
         ac = ApiCaller()
         user_id = get_user_ids()[0]
         mic(user_id)
-        entries = ac(user_id=user_id, before_date='2022-08-01')
+        entries = ac(user_id=user_id, before_date='2022-07-29')
         mic(entries)
     # check_call()
 
@@ -327,8 +340,8 @@ if __name__ == '__main__':
         def single():
             date = dc.uid2dt[user_id][-1]
             fnm = os_join(user_id, f'{date}.csv')
-            # sv = False
-            sv = True
+            sv = False
+            # sv = True
             dc.clean_single(data_path=fnm, save=sv)
         # single()
 
