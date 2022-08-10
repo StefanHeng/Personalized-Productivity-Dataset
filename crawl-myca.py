@@ -6,6 +6,7 @@ import datetime
 import requests
 from os.path import join as os_join
 from typing import List, Tuple, Dict, Union, Any
+from dataclasses import dataclass
 
 import pandas as pd
 from tqdm.auto import tqdm
@@ -17,35 +18,42 @@ class ApiCaller:
     """
     Makes API call to return all entries added for a given user on a given day
     """
-    base_url = 'https://jasecidev.lifelogify.com'
-    init_url = f'{base_url}/user/token/'
-    call_url = f'{base_url}/js/walker_run'
 
-    def __init__(self, credential_fnm: str = 'admin-credential.csv', save_token: bool = False, verbose: bool = True):
+    def __init__(
+            self, credential_fnm: str = 'admin-credential.csv', token_fnm: str = None, verbose: bool = True,
+            env: str = 'dev'
+    ):
+        ca.check_mismatch('API Env', env, ['dev', 'prod'])
+        self.env = env
+        if env == 'dev':
+            self.base_url = 'https://jasecidev.lifelogify.com'
+        else:
+            self.base_url = 'https://sandbox.myca.ai'
+        self.init_url = f'{self.base_url}/user/token/'
+        self.call_url = f'{self.base_url}/js/walker_run'
+
         self.logger = get_logger(self.__class__.__qualname__)
         # TODO: without this, logging message is duplicated for unknown reason in this project only
         self.logger.propagate = False
         self.verbose = verbose
 
-        if save_token:
+        self.token_fnm = token_fnm
+        token_path = os_join('auth', 'myca', f'{token_fnm}.json')
+        if token_fnm and not os.path.exists(token_path):
             credential_path = os_join('auth', 'myca', credential_fnm)
             df = pd.read_csv(credential_path)
             auth = df.iloc[0, :].to_dict()
             payload = dict(email=auth['username'], password=auth['password'])
 
-            res = requests.post(url=ApiCaller.init_url, data=payload)
+            res = requests.post(url=self.init_url, data=payload)
             res = json.loads(res.text)
-            fnm = f'{now(for_path=True)}-admin-token.json'
-            path_out = os_join('auth', 'myca', fnm)
-            with open(path_out, 'w') as f:
+            with open(token_path, 'w') as f:
                 json.dump(res, f, indent=4)
             if self.verbose:
-                self.logger.info(f'Admin token saved to {logi(path_out)}')
+                self.logger.info(f'Admin token saved to {logi(token_path)}')
 
-    def __call__(
-            self, user_id: str, before_date: str, token_fnm: str = '2022-08-02_15-36-01-admin-token.json'
-    ) -> List[Tuple[str, Dict]]:
-        token_path = os_join('auth', 'myca', token_fnm)
+    def __call__(self, user_id: str, before_date: str, token_fnm: str = None) -> List[Tuple[str, Dict]]:
+        token_path = os_join('auth', 'myca', f'{token_fnm or self.token_fnm}.json')
         with open(token_path) as f:
             token = json.load(f)['token']
 
@@ -61,35 +69,57 @@ class ApiCaller:
                 show_report=1  # this must be 1 or otherwise the response will be empty
             )
         )
-        args = dict(url=ApiCaller.call_url, headers=headers, data=json.dumps(payload))
+        args = dict(url=self.call_url, headers=headers, data=json.dumps(payload))
         if self.verbose:
             self.logger.info(f'Making fetch data call with {logi(args)}... ')
-        t_strt = datetime.datetime.now()
-        res = requests.post(**args)
-        t = fmt_delta(datetime.datetime.now() - t_strt)
-        if self.verbose:
-            self.logger.info(f'Got response in {logi(t)} with status {logi(res.status_code)}')
-        assert res.status_code == 200
-        res = json.loads(res.text)
-        assert res['success']
-        return res['report']
+
+        res = None
+        while not res or res.status_code != 200:  # Retry if code is 503
+            t_strt = datetime.datetime.now()
+            res = requests.post(**args)
+            t = fmt_delta(datetime.datetime.now() - t_strt)
+            if self.verbose:
+                self.logger.info(f'Got response in {logi(t)} with status {logi(res.status_code)}')
+        if res.status_code == 200:
+            res = json.loads(res.text)
+        else:
+            raise ValueError(f'API call failed with {logi(res)}')
+        if res['success']:
+            return res['report']
+        else:
+            print(res['stack_trace'])
+            raise ValueError(f'API call failed with {logi(res)}')
 
 
-def get_user_ids(path: str = os_join('auth', 'myca', 'user-ids.txt')) -> List[str]:
+def get_user_ids(path: str = os_join('auth', 'myca', 'user-ids.json'), split: str = 'dev') -> List[str]:
     with open(path, 'r') as f:
+        user_ids = json.load(f)[split]
         # keeping the prefix still works, but not friendly to file system
-        return [i.removeprefix('urn:uuid:') for i in f.read().splitlines()]
+        return [i.removeprefix('urn:uuid:') for i in user_ids]
+
+
+@dataclass
+class WriteOutput:
+    text: List[Tuple[str, Dict]] = None
+    table: pd.DataFrame = None
 
 
 class DataWriter:
     """
     Writes raw action entries per day returned from myca API calls for a given user
     """
-    def __init__(self, output_path: str = os_join('myca-dataset', f'raw, {now(for_path=True)}')):
+    def __init__(
+            self, output_path: str = os_join('myca-dataset', f'raw, {now(for_path=True)}'), save_raw: bool = False,
+            caller_args: Dict = None
+    ):
+        self.logger = get_logger(self.__class__.__qualname__)
+        self.logger.propagate = False
+
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
 
-        self.ac = ApiCaller(verbose=False)
+        self.ac = ApiCaller(verbose=False, **caller_args)
+        self.save_raw = save_raw
 
     @staticmethod
     def _map_entry(f1: str, entry: Dict) -> Dict:
@@ -102,36 +132,44 @@ class DataWriter:
         d.update({k: v for k, v in entry.items() if k != 'context'})
         return d
 
-    def get_single(self, user_id: str, before_date: str, save: bool = False) -> pd.DataFrame:
+    def get_single(self, user_id: str, before_date: str, save: bool = False) -> WriteOutput:
         entries = self.ac(user_id=user_id, before_date=before_date)
         df = pd.DataFrame([self._map_entry(*e) for e in entries])
         order = sorted(list(df.columns))
         order.insert(0, order.pop(order.index('field1')))
         df = df[order]
         if save:
-            self.write_single(user_id=user_id, date=before_date, df=df)
-        return df
+            self.write_single(user_id=user_id, date=before_date, out=df)
+        return WriteOutput(text=entries, table=df)
 
-    def write_single(self, user_id: str = None, date: str = None, df: pd.DataFrame = None, group_by_user: bool = True):
-        if df is None:
-            df = self.get_single(user_id=user_id, before_date=date)
+    def write_single(self, user_id: str = None, date: str = None, out: WriteOutput = None, group_by_user: bool = True):
+        if out is None:
+            out = self.get_single(user_id=user_id, before_date=date)
         if group_by_user:
             path = os_join(self.output_path, user_id)
             os.makedirs(path, exist_ok=True)
             path = os_join(path, f'{date}.csv')
         else:
             path = os_join(self.output_path, f'{user_id}-{date}.csv')
+        raw, df = out.text, out.table
         df.to_csv(path, index=False)
+        if self.save_raw:
+            path = path.removesuffix('.csv') + '.json'
+            with open(path, 'w') as f:
+                json.dump(raw, f, indent=4)
 
-    def get_all(self, user_id: str, start_date: str, end_date: str, save: bool = False) -> Dict[str, pd.DataFrame]:
+    def get_all(self, user_id: str, start_date: str, end_date: str, save: bool = False) -> Dict[str, WriteOutput]:
+        d_log = dict(user_id=user_id, start_date=start_date, end_date=end_date)
+        self.logger.info(f'Getting raw data with {logi(d_log)}... ')
         dates = pd.date_range(start=start_date, end=end_date, freq='D')
-        dt2df: Dict[str, pd.DataFrame] = dict()
+        dt2df: Dict[str, WriteOutput] = dict()
         it = tqdm(dates, desc='Processing', unit='date')
         n = 0
         for d in it:
             d = d.strftime('%Y-%m-%d')
             it.set_postfix(dict(n=n, date_q=d))
-            df = self.get_single(user_id=user_id, before_date=d)
+            out = self.get_single(user_id=user_id, before_date=d)
+            df = out.table
             if not df.empty:
                 day = df.loc[0, 'context.day']
                 day = datetime.datetime.strptime(day, '%Y-%m-%dT%H:%M:%S')
@@ -140,13 +178,13 @@ class DataWriter:
                 it.set_postfix(dict(n=n, date_q=d, date_ret=day))
                 # Ensure no duplicates
                 if day not in dt2df:
-                    dt2df[day] = df
+                    dt2df[day] = out
                     n += 1
                 else:
-                    assert df.equals(dt2df[day])
+                    assert df.equals(dt2df[day].table)  # by `get_single` construction, `text` is also the same
         if save:
-            for d, df in dt2df.items():
-                self.write_single(user_id=user_id, date=d, df=df)
+            for d, o in dt2df.items():
+                self.write_single(user_id=user_id, date=d, out=o)
         return dt2df
 
 
@@ -193,7 +231,14 @@ class DataCleaner:
     """
     Clean up the raw data (see `DataWriter`) from a given date into our format
     """
-    def __init__(self, dataset_path: str, output_path: str = os_join('myca-dataset', f'cleaned, {now(for_path=True)}')):
+    def __init__(
+            self, dataset_path: str, output_path: str = os_join('myca-dataset', f'cleaned, {now(for_path=True)}'),
+            verbose: bool = True
+    ):
+        self.logger = get_logger(self.__class__.__qualname__)
+        self.logger.propagate = False
+        self.verbose = verbose
+
         self.dataset_path = dataset_path
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)
@@ -245,7 +290,10 @@ class DataCleaner:
         """
         Clean up raw data for a single date
         """
-        df = pd.read_csv(os_join(self.dataset_path, data_path))
+        path = os_join(self.dataset_path, data_path)
+        if self.verbose:
+            self.logger.info(f'Cleaning {path}... ')
+        df = pd.read_csv(path)
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
 
         root_id = df.loc[0, 'id']
@@ -270,12 +318,10 @@ class DataCleaner:
                 name=readable_tree(graph_txt, id2txt(root_id), parent_prefix='p')
             )
         )
-        mic(meta['tree']['name'])
         meta['path-exclusive'] = {
             typ: {k: v[1:-1] if v else None for k, v in meta['path'][typ].items()}
             for typ in meta['path']
         }
-        mic(meta['path-exclusive']['name'])
         # note since label based on path, the order in label list implies nested level
         id2lbs = {k: [id2txt(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
         df['labels'] = df.id.apply(lambda i: id2lbs[i])
@@ -307,10 +353,12 @@ class DataCleaner:
 
 if __name__ == '__main__':
     def check_call():
-        ac = ApiCaller()
-        user_id = get_user_ids()[0]
-        mic(user_id)
-        entries = ac(user_id=user_id, before_date='2022-07-29')
+        e = 'prod'
+        tok = '2022-08-08_21-54-23-prod-admin-token'
+        # tok = f'{now(for_path=True)}-{e}-admin-token'
+        ac = ApiCaller(env=e, token_fnm=tok)
+        user_id = get_user_ids(split=e)[0]
+        entries = ac(user_id=user_id, before_date='2022-07-29', token_fnm=tok)
         mic(entries)
     # check_call()
 
@@ -324,17 +372,30 @@ if __name__ == '__main__':
     # fetch_data_by_day()
 
     def write_all():
-        user_id = get_user_ids()[0]
-        dw = DataWriter()
-        # st = '2021-01-01'
-        st = '2022-07-15'
-        dw.get_all(user_id=user_id, start_date=st, end_date='2022-08-01', save=True)
-    # write_all()
+        # e = 'dev'
+        e = 'prod'
+
+        if e == 'dev':
+            tok_fnm = '2022-08-08_21-53-38-dev-admin-token'
+            dw = DataWriter(caller_args=dict(env=e, token_fnm=tok_fnm), save_raw=True)
+            user_id = get_user_ids()[0]
+            dw.get_all(user_id=user_id, start_date='2022-07-15', end_date='2022-08-01', save=True)
+        else:
+            tok_fnm = '2022-08-08_21-54-23-prod-admin-token'
+            dw = DataWriter(caller_args=dict(env=e, token_fnm=tok_fnm), save_raw=True)
+            uids = get_user_ids(split='prod')[2:]
+            # st = '2020-09-01'  # This got error from Myca API
+            st = '2020-10-01'
+            # st = '2021-01-01'
+            # st = '2021-10-28'
+            for i in uids:
+                dw.get_all(user_id=i, start_date=st, end_date='2022-08-01', save=True)
+    write_all()
 
     def clean_up():
         dnm = 'raw, 2022-08-04_15-26-59'
         path = os_join('myca-dataset', dnm)
-        dc = DataCleaner(dataset_path=path)
+        dc = DataCleaner(dataset_path=path, verbose=False)
         user_id = dc.user_ids[0]
 
         def single():
@@ -346,6 +407,9 @@ if __name__ == '__main__':
         # single()
 
         def all_():
-            dc.clean_all(user_id=user_id, save=True)
+            # dc.clean_all(user_id=user_id, save=True)
+            uids = get_user_ids()
+            for i in uids:
+                dc.clean_all(i, save=True)
         all_()
-    clean_up()
+    # clean_up()
