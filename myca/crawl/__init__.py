@@ -243,14 +243,16 @@ class Id2Text:
 
     def __call__(self, id_: str) -> str:
         txts = self.df.loc[self.df.id == id_, 'text'].values
-        if len(txts) != 1:
-            mic('')
-            mic(self.df[self.df.id == id_])
-            mic(txts)
         if self.enforce_single:
             assert len(txts) == 1
         txt = txts[0]
         return 'root' if is_nan(txt) else txt
+
+
+@dataclass
+class CleanOutput:
+    table: pd.DataFrame = None
+    meta: Dict[str, Dict[str, Any]] = None
 
 
 class DataCleaner:
@@ -309,9 +311,10 @@ class DataCleaner:
                     graph[parent].append(id_)
                     # workset & workette are types for root-level group, internal group respectively;
                     # TODO: Practically anything can have children?
+                    # TODO: what's `item`?
                     # TODO empirically found entries with no type but can have children
                     typ = row.type
-                    can_have_child = typ in ['workset', 'workette', 'note', 'link'] or is_nan(typ)
+                    can_have_child = typ in ['workset', 'workette', 'note', 'link', 'item'] or is_nan(typ)
                     # can_have_child = True
                     # shouldn't raise an error on `append` if api call well-formed
                     graph[id_] = [] if can_have_child else None
@@ -334,7 +337,7 @@ class DataCleaner:
                 idxs = sorted(df.index[df.id == d].to_list())
                 parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
-                self.logger.warning(f'Duplicate id found with {logi(d_log)}')
+                self.logger.info(f'Duplicate id found with {logi(d_log)}')
                 row0 = df.loc[idxs[0]].drop(labels='parent_id')
                 # mic(row0)
                 assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
@@ -347,7 +350,7 @@ class DataCleaner:
             assert (df.id.value_counts() == 1).all()  # sanity check
         return df
 
-    def clean_single(self, data_path: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
+    def clean_single(self, data_path: str, save: bool = False) -> CleanOutput:
         """
         Clean up raw data for a single date
         """
@@ -355,43 +358,46 @@ class DataCleaner:
         if self.verbose:
             self.logger.info(f'Cleaning {path}... ')
         df = pd.read_csv(path)
-        df = self.clean_df(df)
+        if len(df) == 1:
+            self.logger.info(f'No action entries found with {logi(data_path)}')
+        else:
+            df = self.clean_df(df)
 
-        root_id = df.loc[0, 'id']
-        graph = DataCleaner._cleaned_df2graph(df)
-        i2t = Id2Text(df)
+            root_id = df.loc[0, 'id']
+            graph = DataCleaner._cleaned_df2graph(df)
+            i2t = Id2Text(df)
 
-        graph_txt = {i2t(k): ([i2t(i) for i in v] if v else v) for k, v in graph.items()}
-        path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
-        meta = dict(
-            graph=dict(id=graph, name=graph_txt),
-            path=dict(id=path, name={i2t(k): ([i2t(i) for i in v] if v else v) for k, v in path.items()}),
-            # a human-readable snapshot
-            tree=dict(
-                id=readable_tree(graph, root_id),
-                name=readable_tree(graph_txt, i2t(root_id), parent_prefix='p')
+            graph_txt = {i2t(k): ([i2t(i) for i in v] if v else v) for k, v in graph.items()}
+            path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
+            meta = dict(
+                graph=dict(id=graph, name=graph_txt),
+                path=dict(id=path, name={i2t(k): ([i2t(i) for i in v] if v else v) for k, v in path.items()}),
+                # a human-readable snapshot
+                tree=dict(
+                    id=readable_tree(graph, root_id),
+                    name=readable_tree(graph_txt, i2t(root_id), parent_prefix='p')
+                )
             )
-        )
-        meta['path-exclusive'] = {
-            typ: {k: v[1:-1] if v else None for k, v in meta['path'][typ].items()}
-            for typ in meta['path']
-        }
-        # note since label based on path, the order in label list implies nested level
-        id2lbs = {k: [i2t(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
-        df['labels'] = df.id.apply(lambda i: id2lbs[i])
+            meta['path-exclusive'] = {
+                typ: {k: v[1:-1] if v else None for k, v in meta['path'][typ].items()}
+                for typ in meta['path']
+            }
+            # note since label based on path, the order in label list implies nested level
+            id2lbs = {k: [i2t(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
+            df['labels'] = df.id.apply(lambda i: id2lbs[i])
 
-        if save:
-            if os.sep in data_path:
-                parent_dirs = data_path.split(os.sep)[:-1]
-                os.makedirs(os_join(self.output_path, *parent_dirs), exist_ok=True)
-            out_path = os_join(self.output_path, data_path)
-            df.to_csv(out_path, index=False)
-            out_path = out_path.removesuffix('.csv') + '.json'
-            with open(out_path, 'w') as f:
-                json.dump(meta, f, indent=4)
-        return df, meta
+            if save:
+                if os.sep in data_path:
+                    parent_dirs = data_path.split(os.sep)[:-1]
+                    os.makedirs(os_join(self.output_path, *parent_dirs), exist_ok=True)
+                out_path = os_join(self.output_path, data_path)
+                df.to_csv(out_path, index=False)
+                out_path = out_path.removesuffix('.csv') + '.json'
+                with open(out_path, 'w') as f:
+                    json.dump(meta, f, indent=4)
+            return CleanOutput(table=df, meta=meta)
 
-    def clean_all(self, user_id: str, save: bool = False) -> List[Tuple[pd.DataFrame, Dict]]:
+    def clean_all(self, user_id: str, save: bool = False) -> List[CleanOutput]:
         """
         Clean up raw data for a single user
         """
@@ -455,11 +461,13 @@ if __name__ == '__main__':
         dc = DataCleaner(dataset_path=path, verbose=False)
 
         def single():
-            user_id = dc.user_ids[1]
+            user_id = dc.user_ids[2]
             mic(user_id)
             # date = dc.uid2dt[user_id][-1]
             # date = '2021-05-07'
-            date = '2021-05-21'
+            # date = '2021-05-21'
+            # date = '2022-07-25'
+            date = '2021-09-04'
             fnm = os_join(user_id, f'{date}.csv')
             sv = False
             # sv = True
