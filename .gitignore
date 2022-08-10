@@ -3,9 +3,9 @@ auth/
 .DS_Store
 test-lang.py
 myca-dataset/
-flair_ph/
+flair/
+taggers/
 grouped_data.json
-#run_flair.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

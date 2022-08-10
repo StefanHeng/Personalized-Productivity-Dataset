@@ -1,4 +1,3 @@
-
 import os
 import pandas as pd
 
@@ -8,7 +7,7 @@ if __name__ == '__main__':
 
     def check_myca_eg():
         """
-        Check the myca CSV crawl for example usage
+        Check the myca CSV dataset for example usage
 
         Would assume those are by a single user
         """

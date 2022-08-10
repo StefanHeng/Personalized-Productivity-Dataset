@@ -1,15 +1,16 @@
-# flake8: noqa
-import argparse
-from random import random
 import time
+import json
+import random
+import argparse
+from pathlib import Path
+
 import numpy as np
+import torch
+import flair
 from flair.models import TARSClassifier
 from flair.data import Corpus, Sentence
 from flair.datasets import SentenceDataset
 from flair.trainers import ModelTrainer
-import torch
-import flair
-from pathlib import Path
 
 torch.cuda.empty_cache()
 
@@ -23,12 +24,7 @@ def set_seed(seed):
 
 set_seed(42)
 
-import json
-
-with open(
-    "grouped_data.json",
-    encoding="utf-8",
-) as fp:
+with open("grouped_data.json", encoding="utf-8",) as fp:
     g_data = json.load(fp)
 
 group_count = 1
@@ -43,7 +39,7 @@ def train_module(model, fine_tune, ff_dim, nhead, epoch, train_ds, test_ds):
     )
     if type(base_path) is str:
         base_path = Path(base_path)
-    # intialize the train/ test corpus with the data provided
+    # intialize the train/ test corpus with the dataset provided
     corpus = Corpus(train=train_ds, test=test_ds)
     # initalize the model adding the provided head config
     bert = TARSClassifier(
@@ -75,7 +71,7 @@ def train_module(model, fine_tune, ff_dim, nhead, epoch, train_ds, test_ds):
     )
 
     print(
-        f"\n\nTime taken to complete the model training : {time.time()-start_time}\n\n"
+        f"\n\nTime taken to complete the model training : {time.time() - start_time}\n\n"
     )
     print(data)
     group_count += 1
@@ -137,7 +133,7 @@ if __name__ == "__main__":
         print(train_ds[0])
         print(test_ds[0])
         print("data_load Completed")
-        # invoking the training, with provided configuration and data
+        # invoking the training, with provided configuration and dataset
         train_module(
             model=args.model,
             fine_tune=args.fine_tune,
