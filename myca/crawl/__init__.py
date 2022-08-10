@@ -232,6 +232,27 @@ def readable_tree(graph: Dict[str, List[str]], root: str, parent_prefix: str = N
         return p, [readable_tree(graph, c, parent_prefix=parent_prefix) for c in children]
 
 
+def is_nan(x) -> bool:
+    return isinstance(x, float) and math.isnan(x)
+
+
+class Id2Text:
+    def __init__(self, df: pd.DataFrame, enforce_single: bool = True):
+        self.df = df
+        self.enforce_single = enforce_single
+
+    def __call__(self, id_: str) -> str:
+        txts = self.df.loc[self.df.id == id_, 'text'].values
+        if len(txts) != 1:
+            mic('')
+            mic(self.df[self.df.id == id_])
+            mic(txts)
+        if self.enforce_single:
+            assert len(txts) == 1
+        txt = txts[0]
+        return 'root' if is_nan(txt) else txt
+
+
 class DataCleaner:
     """
     Clean up the raw data (see `DataWriter`) from a given date into our format
@@ -260,7 +281,7 @@ class DataCleaner:
             id=entry['jid'],  # id of the action entry
             text=entry['context.name'],  # actual text for the action entry
             note=entry['context.note'],
-            link=entry['context.links'],
+            link=entry.get('context.links', None),  # earlier entries don't contain field `links`
             creation_time=entry['j_timestamp'],
             type=entry['context.wtype'],  # UI type of the entry
             parent_id=entry['field1']  # by API call design
@@ -281,8 +302,17 @@ class DataCleaner:
             added = False
             for parent in graph:
                 if parent == pid:
+                    if graph[parent] is None:
+                        mic(df[df.id == id_])
+                        mic(df[df.id == parent])
+                        mic(Id2Text(df)(parent), Id2Text(df)(id_))
                     graph[parent].append(id_)
-                    can_have_child = row.type in ['workset', 'workette']  # types for root-level group, internal group
+                    # workset & workette are types for root-level group, internal group respectively;
+                    # TODO: Practically anything can have children?
+                    # TODO empirically found entries with no type but can have children
+                    typ = row.type
+                    can_have_child = typ in ['workset', 'workette', 'note', 'link'] or is_nan(typ)
+                    # can_have_child = True
                     # shouldn't raise an error on `append` if api call well-formed
                     graph[id_] = [] if can_have_child else None
                     added = True
@@ -290,6 +320,32 @@ class DataCleaner:
             if not added:  # should not happen, assuming API returns in correct order
                 raise ValueError(f'Parent for node with id={logi(id_)} not found')
         return graph
+
+    def clean_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.apply(DataCleaner._clean_single_entry, axis=1)
+        i2t = Id2Text(df, enforce_single=False)
+        dup_flag = df.id.value_counts() != 1
+        if dup_flag.any():
+            dup = dup_flag[dup_flag].index.to_list()
+            # mic(dup)
+            for d in dup:
+                # The same id appears in multiple rows, assume it updates the same action entry
+                # the update must be moving the action entry, i.e. changing parent
+                idxs = sorted(df.index[df.id == d].to_list())
+                parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
+                d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
+                self.logger.warning(f'Duplicate id found with {logi(d_log)}')
+                row0 = df.loc[idxs[0]].drop(labels='parent_id')
+                # mic(row0)
+                assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
+                # mic(idxs)
+                # mic(df)
+                df = df.drop(idxs[:-1])  # Only keep the bottom-most row, assumed to be most up-to-date
+                # mic(df)
+                # mic(sorted(df.index[df.id == d].to_list()))
+            df = df.reset_index(drop=True)
+            assert (df.id.value_counts() == 1).all()  # sanity check
+        return df
 
     def clean_single(self, data_path: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
         """
@@ -299,28 +355,21 @@ class DataCleaner:
         if self.verbose:
             self.logger.info(f'Cleaning {path}... ')
         df = pd.read_csv(path)
-        df = df.apply(DataCleaner._clean_single_entry, axis=1)
+        df = self.clean_df(df)
 
         root_id = df.loc[0, 'id']
         graph = DataCleaner._cleaned_df2graph(df)
+        i2t = Id2Text(df)
 
-        def id2txt(i_: str) -> str:
-            txts = df.loc[df.id == i_, 'text'].values
-            assert len(txts) == 1
-            txt = txts[0]
-            if isinstance(txt, float) and math.isnan(txt):
-                return 'root'
-            else:
-                return txt
-        graph_txt = {id2txt(k): ([id2txt(i) for i in v] if v else v) for k, v in graph.items()}
+        graph_txt = {i2t(k): ([i2t(i) for i in v] if v else v) for k, v in graph.items()}
         path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
         meta = dict(
             graph=dict(id=graph, name=graph_txt),
-            path=dict(id=path, name={id2txt(k): ([id2txt(i) for i in v] if v else v) for k, v in path.items()}),
+            path=dict(id=path, name={i2t(k): ([i2t(i) for i in v] if v else v) for k, v in path.items()}),
             # a human-readable snapshot
             tree=dict(
                 id=readable_tree(graph, root_id),
-                name=readable_tree(graph_txt, id2txt(root_id), parent_prefix='p')
+                name=readable_tree(graph_txt, i2t(root_id), parent_prefix='p')
             )
         )
         meta['path-exclusive'] = {
@@ -328,7 +377,7 @@ class DataCleaner:
             for typ in meta['path']
         }
         # note since label based on path, the order in label list implies nested level
-        id2lbs = {k: [id2txt(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
+        id2lbs = {k: [i2t(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
         df['labels'] = df.id.apply(lambda i: id2lbs[i])
 
         if save:
@@ -347,7 +396,7 @@ class DataCleaner:
         Clean up raw data for a single user
         """
         dates = self.uid2dt[user_id]
-        it = tqdm(dates, desc=f'Cleaning up user {logi(user_id)}', unit='date')
+        it = tqdm(dates, desc=f'Cleaning up raw data for user {logi(user_id)}', unit='date')
         ret = []
         for d in it:
             it.set_postfix(date=logi(d))
@@ -388,7 +437,7 @@ if __name__ == '__main__':
         else:
             tok_fnm = '2022-08-08_21-54-23-prod-admin-token'
             dw = DataWriter(caller_args=dict(env=e, token_fnm=tok_fnm), save_raw=True)
-            uids = get_user_ids(split='prod')[2:]
+            uids = get_user_ids(split=e)[2:]
             # st = '2020-09-01'  # This got error from Myca API
             st = '2020-10-01'
             # st = '2021-01-01'
@@ -398,15 +447,19 @@ if __name__ == '__main__':
     # write_all()
 
     def clean_up():
+        # e = 'dev'
+        e = 'prod'
+
         dnm = 'raw, 2022-08-10_09-57-34'
         path = os_join(u.dset_path, dnm)
-        mic(path)
-        mic(os.listdir(path))
         dc = DataCleaner(dataset_path=path, verbose=False)
-        user_id = dc.user_ids[0]
 
         def single():
-            date = dc.uid2dt[user_id][-1]
+            user_id = dc.user_ids[1]
+            mic(user_id)
+            # date = dc.uid2dt[user_id][-1]
+            # date = '2021-05-07'
+            date = '2021-05-21'
             fnm = os_join(user_id, f'{date}.csv')
             sv = False
             # sv = True
@@ -415,7 +468,7 @@ if __name__ == '__main__':
 
         def all_():
             # dc.clean_all(user_id=user_id, save=True)
-            uids = get_user_ids()
+            uids = get_user_ids(split=e)
             for i in uids:
                 dc.clean_all(i, save=True)
         all_()
