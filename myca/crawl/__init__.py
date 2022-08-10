@@ -12,12 +12,17 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from stefutil import *
+from myca.util import *
+
+
+__all__ = ['ApiCaller', 'WriteOutput', 'DataWriter', 'DataCleaner']
 
 
 class ApiCaller:
     """
     Makes API call to return all entries added for a given user on a given day
     """
+    auth_path = os_join(u.proj_path, 'auth', 'myca')
 
     def __init__(
             self, credential_fnm: str = 'admin-credential.csv', token_fnm: str = None, verbose: bool = True,
@@ -38,9 +43,9 @@ class ApiCaller:
         self.verbose = verbose
 
         self.token_fnm = token_fnm
-        token_path = os_join('auth', 'myca', f'{token_fnm}.json')
+        token_path = os_join(ApiCaller.auth_path, f'{token_fnm}.json')
         if token_fnm and not os.path.exists(token_path):
-            credential_path = os_join('auth', 'myca', credential_fnm)
+            credential_path = os_join(ApiCaller.auth_path, credential_fnm)
             df = pd.read_csv(credential_path)
             auth = df.iloc[0, :].to_dict()
             payload = dict(email=auth['username'], password=auth['password'])
@@ -53,7 +58,7 @@ class ApiCaller:
                 self.logger.info(f'Admin token saved to {logi(token_path)}')
 
     def __call__(self, user_id: str, before_date: str, token_fnm: str = None) -> List[Tuple[str, Dict]]:
-        token_path = os_join('auth', 'myca', f'{token_fnm or self.token_fnm}.json')
+        token_path = os_join(ApiCaller.auth_path, f'{token_fnm or self.token_fnm}.json')
         with open(token_path) as f:
             token = json.load(f)['token']
 
@@ -91,7 +96,7 @@ class ApiCaller:
             raise ValueError(f'API call failed with {logi(res)}')
 
 
-def get_user_ids(path: str = os_join('auth', 'myca', 'user-ids.json'), split: str = 'dev') -> List[str]:
+def get_user_ids(path: str = os_join(ApiCaller.auth_path, 'user-ids.json'), split: str = 'dev') -> List[str]:
     with open(path, 'r') as f:
         user_ids = json.load(f)[split]
         # keeping the prefix still works, but not friendly to file system
@@ -109,7 +114,7 @@ class DataWriter:
     Writes raw action entries per day returned from myca API calls for a given user
     """
     def __init__(
-            self, output_path: str = os_join('myca-dataset', f'raw, {now(for_path=True)}'), save_raw: bool = False,
+            self, output_path: str = os_join(u.dset_path, f'raw, {now(for_path=True)}'), save_raw: bool = False,
             caller_args: Dict = None
     ):
         self.logger = get_logger(self.__class__.__qualname__)
@@ -232,7 +237,7 @@ class DataCleaner:
     Clean up the raw data (see `DataWriter`) from a given date into our format
     """
     def __init__(
-            self, dataset_path: str, output_path: str = os_join('myca-dataset', f'cleaned, {now(for_path=True)}'),
+            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(for_path=True)}'),
             verbose: bool = True
     ):
         self.logger = get_logger(self.__class__.__qualname__)
@@ -390,11 +395,13 @@ if __name__ == '__main__':
             # st = '2021-10-28'
             for i in uids:
                 dw.get_all(user_id=i, start_date=st, end_date='2022-08-01', save=True)
-    write_all()
+    # write_all()
 
     def clean_up():
-        dnm = 'raw, 2022-08-04_15-26-59'
-        path = os_join('myca-dataset', dnm)
+        dnm = 'raw, 2022-08-10_09-57-34'
+        path = os_join(u.dset_path, dnm)
+        mic(path)
+        mic(os.listdir(path))
         dc = DataCleaner(dataset_path=path, verbose=False)
         user_id = dc.user_ids[0]
 
@@ -412,4 +419,4 @@ if __name__ == '__main__':
             for i in uids:
                 dc.clean_all(i, save=True)
         all_()
-    # clean_up()
+    clean_up()
