@@ -1,13 +1,16 @@
 """
-Cleanup dataset & aggregate for final dataset
+Cleanup dataset down to the relevant fields w/ human-readable snapshot of data for each date
+
+TODO: sanity check creation time order
 """
 
 
 import os
 import json
 import glob
+import datetime
 from os.path import join as os_join
-from typing import List, Tuple, Dict, Any, Union
+from typing import List, Tuple, Dict, Any, Union, Optional
 from dataclasses import dataclass
 
 import pandas as pd
@@ -16,6 +19,9 @@ from tqdm.auto import tqdm
 from stefutil import *
 from myca.util import *
 from myca.dataset.util import *
+
+
+NAN = float('nan')
 
 
 @dataclass
@@ -131,12 +137,11 @@ class DataCleaner:
                         mic(Id2Text(df)(parent), Id2Text(df)(id_))
                     graph[parent].append(id_)
                     # workset & workette are types for root-level group, internal group respectively;
-                    # TODO: Practically anything can have children?
-                    # TODO: what's `item`?
-                    # TODO empirically found entries with no type but can have children
+                    # Practically anything can have children
+                    # TODO: `item` is `workette`, `group` is `workset`, `item` should not appear in backend API call...
+                    # TODO: empirically found entries **w/ no type** and w/ children?
                     typ = row.type
                     can_have_child = typ in ['workset', 'workette', 'note', 'link', 'item'] or is_nan(typ)
-                    # can_have_child = True
                     # shouldn't raise an error on `append` if api call well-formed
                     graph[id_] = [] if can_have_child else None
                     added = True
@@ -147,11 +152,21 @@ class DataCleaner:
 
     def clean_df(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
+
+        times = df.creation_time.map(lambda x: datetime.datetime.strptime(x, '%Y-%m-%dT%H:%M:%S.%f'))
+        if not all((d < times[i+1]) for i, d in enumerate(times[:-1])):  # sanity check time in increasing order
+            idxs2tms: Dict[Tuple[int, int], Tuple[str, str]] = dict()
+            # TODO: why this happens? problematic API call?
+            for i, d in enumerate(times[:-1]):
+                if d >= times[i + 1]:
+                    idxs2tms[(i, i + 1)] = (str(d), str(times[i + 1]))
+            self.logger.warning(f'Time not in increasing order with {logi(idxs2tms)}')
+            # raise ValueError(f'Time not in increasing order with {logi(idxs2tms)}')
+
         i2t = Id2Text(df, enforce_single=False)
         dup_flag = df.id.value_counts() != 1
         if dup_flag.any():
             dup = dup_flag[dup_flag].index.to_list()
-            # mic(dup)
             for d in dup:
                 # The same id appears in multiple rows, assume it updates the same action entry
                 # the update must be moving the action entry, i.e. changing parent
@@ -160,15 +175,25 @@ class DataCleaner:
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
                 self.logger.info(f'Duplicate id found with {logi(d_log)}')
                 row0 = df.loc[idxs[0]].drop(labels='parent_id')
-                # mic(row0)
                 assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
-                # mic(idxs)
-                # mic(df)
                 df = df.drop(idxs[:-1])  # Only keep the bottom-most row, assumed to be most up-to-date
-                # mic(df)
-                # mic(sorted(df.index[df.id == d].to_list()))
             df = df.reset_index(drop=True)
             assert (df.id.value_counts() == 1).all()  # sanity check
+
+        def add_flag(e: pd.Series) -> Optional[bool]:
+            """
+            :return: Whether the current entry is a **direct** children of a `workset`
+                Intended for an easier classification task, as
+                    items under a `workette` are often sequential steps of an item
+                    items under a `workset` are often collections of independent items
+            """
+            if is_nan(e.parent_id):  # special case, root node, not an actual item
+                return
+            else:
+                parents = df.loc[df.id == e.parent_id]
+                assert len(parents) == 1  # sanity check, should have no duplicate
+                return parents.iloc[0].type == 'workset'
+        df['parent_is_group'] = df.apply(add_flag, axis=1)
         return df
 
     def clean_single(self, data_path: str, save: bool = False) -> CleanOutput:
@@ -205,7 +230,7 @@ class DataCleaner:
             }
             # note since label based on path, the order in label list implies nested level
             id2lbs = {k: [i2t(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
-            df['labels'] = df.id.apply(lambda i: id2lbs[i])
+            df['labels'] = df.id.apply(lambda i: json.dumps(id2lbs[i]))
 
             if save:
                 if os.sep in data_path:
@@ -244,21 +269,22 @@ if __name__ == '__main__':
         def single():
             user_id = dc.user_ids[2]
             mic(user_id)
-            # date = dc.uid2dt[user_id][-1]
+            date = dc.uid2dt[user_id][-1]
             # date = '2021-05-07'
             # date = '2021-05-21'
             # date = '2022-07-25'
-            date = '2021-09-04'
+            # date = '2021-09-04'
             fnm = os_join(user_id, f'{date}.csv')
             sv = False
             # sv = True
-            dc.clean_single(data_path=fnm, save=sv)
-        # single()
+            df = dc.clean_single(data_path=fnm, save=sv).table
+            mic(df)
+        single()
 
         def all_():
             # dc.clean_all(user_id=user_id, save=True)
             uids = get_user_ids(split=e)
             for i in uids:
                 dc.clean_all(i, save=True)
-        all_()
+        # all_()
     clean_up()
