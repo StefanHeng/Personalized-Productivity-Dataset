@@ -41,8 +41,6 @@ class ApiCaller:
         self.call_url = f'{self.base_url}/js/walker_run'
 
         self.logger = get_logger(self.__class__.__qualname__)
-        # TODO: without this, logging message is duplicated for unknown reason in this project only
-        self.logger.propagate = False
         self.verbose = verbose
 
         self.token_fnm = token_fnm
@@ -114,7 +112,6 @@ class DataWriter:
             caller_args: Dict = None
     ):
         self.logger = get_logger(self.__class__.__qualname__)
-        self.logger.propagate = False
 
         self.output_path = output_path
         os.makedirs(output_path, exist_ok=True)

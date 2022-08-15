@@ -91,7 +91,6 @@ class DataCleaner:
             verbose: bool = True
     ):
         self.logger = get_logger(self.__class__.__qualname__)
-        self.logger.propagate = False
         self.verbose = verbose
 
         self.dataset_path = dataset_path
@@ -150,17 +149,26 @@ class DataCleaner:
                 raise ValueError(f'Parent for node with id={logi(id_)} not found')
         return graph
 
+    @staticmethod
+    def _str2time(t: str) -> datetime:
+        try:
+            return datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S.%f')
+        except ValueError:
+            return datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S')
+
     def clean_df(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
 
-        times = df.creation_time.map(lambda x: datetime.datetime.strptime(x, '%Y-%m-%dT%H:%M:%S.%f'))
-        if not all((d < times[i+1]) for i, d in enumerate(times[:-1])):  # sanity check time in increasing order
+        # sanity check time in increasing order
+        times = df.creation_time.map(DataCleaner._str2time)
+        if not all((d < times[i+1]) for i, d in enumerate(times[:-1])):
             idxs2tms: Dict[Tuple[int, int], Tuple[str, str]] = dict()
             # TODO: why this happens? problematic API call?
             for i, d in enumerate(times[:-1]):
                 if d >= times[i + 1]:
                     idxs2tms[(i, i + 1)] = (str(d), str(times[i + 1]))
-            self.logger.warning(f'Time not in increasing order with {logi(idxs2tms)}')
+            if self.verbose:
+                self.logger.warning(f'Time not in increasing order with {logi(idxs2tms)}')
             # raise ValueError(f'Time not in increasing order with {logi(idxs2tms)}')
 
         i2t = Id2Text(df, enforce_single=False)
@@ -202,7 +210,7 @@ class DataCleaner:
         """
         path = os_join(self.dataset_path, data_path)
         if self.verbose:
-            self.logger.info(f'Cleaning {path}... ')
+            self.logger.info(f'Cleaning {logi(path)}... ')
         df = pd.read_csv(path)
         if len(df) == 1:
             self.logger.info(f'No action entries found with {logi(data_path)}')
@@ -264,27 +272,29 @@ if __name__ == '__main__':
 
         dnm = 'raw, 2022-08-10_09-57-34'
         path = os_join(u.dset_path, dnm)
-        dc = DataCleaner(dataset_path=path, verbose=False)
+        dc = DataCleaner(dataset_path=path, verbose=True)
 
         def single():
-            user_id = dc.user_ids[2]
+            dc.verbose = True
+            user_id = dc.user_ids[3]
             mic(user_id)
-            date = dc.uid2dt[user_id][-1]
+            # date = dc.uid2dt[user_id][-1]
             # date = '2021-05-07'
             # date = '2021-05-21'
             # date = '2022-07-25'
             # date = '2021-09-04'
+            date = '2022-03-30'
             fnm = os_join(user_id, f'{date}.csv')
             sv = False
             # sv = True
             df = dc.clean_single(data_path=fnm, save=sv).table
             mic(df)
-        single()
+        # single()
 
         def all_():
             # dc.clean_all(user_id=user_id, save=True)
             uids = get_user_ids(split=e)
             for i in uids:
                 dc.clean_all(i, save=True)
-        # all_()
+        all_()
     clean_up()
