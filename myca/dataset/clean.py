@@ -8,7 +8,6 @@ TODO: sanity check creation time order
 import os
 import json
 import glob
-import datetime
 from os.path import join as os_join
 from typing import List, Tuple, Dict, Any, Union, Optional
 from dataclasses import dataclass
