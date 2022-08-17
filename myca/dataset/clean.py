@@ -21,7 +21,7 @@ from myca.util import *
 from myca.dataset.util import *
 
 
-NAN = float('nan')
+__all__ = ['readable_tree', 'DataCleaner']
 
 
 @dataclass
@@ -31,16 +31,25 @@ class CleanOutput:
 
 
 class Id2Text:
-    def __init__(self, df: pd.DataFrame, enforce_single: bool = True):
+    def __init__(self, df: pd.DataFrame, enforce_single: bool = True, root_name: str = 'root'):
         self.df = df
         self.enforce_single = enforce_single
+        self.root_name = root_name
+
+        if (df.text == self.root_name).any():
+            # Resolve, otherwise readable graph representation will be incorrect, cos root node info will be overridden
+            raise ValueError(f'Root node name {logi(self.root_name)} found in {logi("text")} column')
+        self.root_id = df.loc[0, 'id']
 
     def __call__(self, id_: str) -> str:
-        txts = self.df.loc[self.df.id == id_, 'text'].values
-        if self.enforce_single:
-            assert len(txts) == 1
-        txt = txts[0]
-        return 'root' if is_nan(txt) else txt
+        if id_ == self.root_id:
+            return self.root_name
+        else:  # so that root name don't accidentally get returned if `text` is empty
+            txts = self.df.loc[self.df.id == id_, 'text'].values
+            if self.enforce_single:
+                assert len(txts) == 1
+            txt = txts[0]
+            return '' if is_nan(txt) else txt
 
 
 def _path2root(graph: Dict, start, target, curr_path: List) -> List:
@@ -63,7 +72,7 @@ def path2root(graph: Dict, root, target) -> List:
     return _path2root(graph, root, target, [root])  # inclusive start & end
 
 
-def readable_tree(graph: Dict[str, List[str]], root: str, parent_prefix: str = None) -> Union[str, Tuple[str, List[Any]]]:
+def readable_tree(graph: Dict[str, List[str]], root: str = 'root', parent_prefix: str = None) -> Union[str, Tuple[str, List[Any]]]:
     """
     :param graph: Adjacency list of a graph/tree
     :param root: Root node
@@ -73,6 +82,8 @@ def readable_tree(graph: Dict[str, List[str]], root: str, parent_prefix: str = N
         This is because Tuple is rendered as List in json
     :return: nested binary tuples of (name, children)
     """
+    if root not in graph:
+        mic(graph, root)
     children = graph[root]
     is_leaf = (not children) or len(children) == 0
     if is_leaf:
@@ -88,7 +99,7 @@ class DataCleaner:
     """
     def __init__(
             self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(for_path=True)}'),
-            verbose: bool = True
+            verbose: bool = True, root_name: str = 'root'
     ):
         self.logger = get_logger(self.__class__.__qualname__)
         self.verbose = verbose
@@ -102,6 +113,8 @@ class DataCleaner:
             uid: [stem(f) for f in sorted(glob.glob(os_join(dataset_path, uid, '*.csv')))]
             for uid in self.user_ids
         }
+
+        self.root_name = root_name
 
     @staticmethod
     def _clean_single_entry(entry: pd.Series) -> pd.Series:
@@ -130,10 +143,6 @@ class DataCleaner:
             added = False
             for parent in graph:
                 if parent == pid:
-                    if graph[parent] is None:
-                        mic(df[df.id == id_])
-                        mic(df[df.id == parent])
-                        mic(Id2Text(df)(parent), Id2Text(df)(id_))
                     graph[parent].append(id_)
                     # workset & workette are types for root-level group, internal group respectively;
                     # Practically anything can have children
@@ -171,7 +180,7 @@ class DataCleaner:
                 self.logger.warning(f'Time not in increasing order with {logi(idxs2tms)}')
             # raise ValueError(f'Time not in increasing order with {logi(idxs2tms)}')
 
-        i2t = Id2Text(df, enforce_single=False)
+        i2t = Id2Text(df, enforce_single=False, root_name=self.root_name)
         dup_flag = df.id.value_counts() != 1
         if dup_flag.any():
             dup = dup_flag[dup_flag].index.to_list()
@@ -217,11 +226,23 @@ class DataCleaner:
         else:
             df = self.clean_df(df)
 
-            root_id = df.loc[0, 'id']
             graph = DataCleaner._cleaned_df2graph(df)
-            i2t = Id2Text(df)
+            i2t = Id2Text(df, root_name=self.root_name)
+            root_id = i2t.root_id
+            mic(i2t('urn:uuid:8f829bdf-378c-4ec9-b99f-f70a239feec5'))
+            mic(i2t('urn:uuid:756135cc-743e-438e-ac32-8b7f4190191c'))
 
-            graph_txt = {i2t(k): ([i2t(i) for i in v] if v else v) for k, v in graph.items()}
+            graph_txt = {i2t(k): ([i2t(i) for i in v] if v is not None else v) for k, v in graph.items()}
+            mic(graph, graph_txt)
+            graph_txt = dict()
+            for k, v in graph.items():
+                # if k == root_id:
+                #     mic(i2t(k), [i2t(i) for i in v])
+                # graph_txt[i2t(k)] = [i2t(i) for i in v] if v is not None else v
+                if i2t(k) == self.root_name:
+                    mic(k, [i2t(i) for i in v])
+            exit(1)
+            mic(graph_txt)
             path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
             meta = dict(
                 graph=dict(id=graph, name=graph_txt),
@@ -266,35 +287,39 @@ class DataCleaner:
 
 
 if __name__ == '__main__':
+    root_nm = '__ROOT__'
+
     def clean_up():
         # e = 'dev'
         e = 'prod'
 
         dnm = 'raw, 2022-08-10_09-57-34'
         path = os_join(u.dset_path, dnm)
-        dc = DataCleaner(dataset_path=path, verbose=True)
+        dc = DataCleaner(dataset_path=path, verbose=True, root_name=root_nm)
 
         def single():
             dc.verbose = True
-            user_id = dc.user_ids[3]
+            user_id = dc.user_ids[2]
             mic(user_id)
             # date = dc.uid2dt[user_id][-1]
             # date = '2021-05-07'
             # date = '2021-05-21'
             # date = '2022-07-25'
             # date = '2021-09-04'
-            date = '2022-03-30'
+            # date = '2022-03-30'
+            date = '2020-10-07'
             fnm = os_join(user_id, f'{date}.csv')
             sv = False
             # sv = True
-            df = dc.clean_single(data_path=fnm, save=sv).table
-            mic(df)
-        # single()
+            out = dc.clean_single(data_path=fnm, save=sv)
+            df, meta = out.table, out.meta
+            # mic(df, meta)
+        single()
 
         def all_():
             # dc.clean_all(user_id=user_id, save=True)
             uids = get_user_ids(split=e)
             for i in uids:
                 dc.clean_all(i, save=True)
-        all_()
+        # all_()
     clean_up()
