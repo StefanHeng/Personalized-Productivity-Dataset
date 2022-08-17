@@ -1,11 +1,14 @@
 import os
 import json
 import math
-from typing import List
+from typing import List, Dict
 
 from myca.util import *
 
-__all__ = ['is_nan', 'get_user_ids']
+__all__ = ['AdjList', 'is_nan', 'get_user_ids']
+
+
+AdjList = Dict[str, List[str]]
 
 
 def is_nan(x) -> bool:

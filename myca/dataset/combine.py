@@ -41,9 +41,6 @@ class ActionEntry:
     labels: str = None  # Keep as json string for hashing
 
 
-AdjList = Dict[str, List[str]]
-
-
 @dataclass
 class DatesHierarchyPair:
     dates: List[str] = None
@@ -127,9 +124,9 @@ class DataAggregator:
             it.set_postfix(d_log)
             if date == '2020-10-07':  # TODO: debugging
                 break
-        # TODO: do I include the date?
+        # include the date since the `creation_time` field is influenced by time zone,
+        # e.g. timestamp of 10-06 may appear when date 10-05 is queried
         df = pd.DataFrame(sum([[asdict(e) | dict(date=d) for e in lst] for d, lst in date2entries.items()], start=[]))
-        # df = pd.DataFrame(sum([[asdict(e) for e in lst] for d, lst in date2entries.items()], start=[]))
         df['creation_time'] = sum(date2creation_time.values(), start=[])
         df = df[['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'date']]
         # mic(df)
@@ -154,9 +151,7 @@ class DataAggregator:
 
         # compress hierarchy into necessary changes
         # since date in `Y-m-d`, temporal order maintained
-        mic(date2entries['2020-10-07'])
         date2hierarchy = {date: self._get_hierarchy(user_id, date) for date in sorted(date2entries.keys())}
-        mic(date2hierarchy['2020-10-07'])
         dates = iter(sorted(date2entries.keys()))
         d = next(dates, None)
         assert d is not None
@@ -173,15 +168,9 @@ class DataAggregator:
                 dates2hierarchy.append(DatesHierarchyPair(dates=[d], hierarchy=hier_curr))
                 curr_dates = [d]
             d = next(dates, None)
-        # mic(dates2hierarchy)
         dates2hierarchy: Dict = {tuple(p.dates): p.hierarchy for p in dates2hierarchy}
         # root node name, see `clean.Id2Text`
-        # mic(dates2hierarchy)
-        for k, h in dates2hierarchy.items():
-            mic(k)
-            readable_tree(h, root='root')
         dates2meta = {k: dict(hierarchy=h, tree=readable_tree(h, root='root')) for k, h in dates2hierarchy.items()}
-        # mic(dates2meta)
         with open(os_join(self.dataset_path, f'{user_id}.json'), 'w') as f:  # tuple not json serializable
             json.dump({json.dumps(k): v for k, v in dates2meta.items()}, f, indent=4)
 

@@ -82,8 +82,6 @@ def readable_tree(graph: Dict[str, List[str]], root: str = 'root', parent_prefix
         This is because Tuple is rendered as List in json
     :return: nested binary tuples of (name, children)
     """
-    if root not in graph:
-        mic(graph, root)
     children = graph[root]
     is_leaf = (not children) or len(children) == 0
     if is_leaf:
@@ -129,7 +127,7 @@ class DataCleaner:
         ))
 
     @staticmethod
-    def _cleaned_df2graph(df: pd.DataFrame):
+    def _cleaned_df2graph(df: pd.DataFrame) -> AdjList:
         """
         Build the hierarchy for entry groups, as graph/tree represented with adjacency list, i.e. node => children
         Action items that definitely will not have any children will have value of None, instead of empty list
@@ -155,7 +153,7 @@ class DataCleaner:
                     added = True
                     break
             if not added:  # should not happen, assuming API returns in correct order
-                raise ValueError(f'Parent for node with id={logi(id_)} not found')
+                raise ValueError(f'Parent for node with {logi(row.to_dict())} not found')
         return graph
 
     @staticmethod
@@ -165,20 +163,18 @@ class DataCleaner:
         except ValueError:
             return datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S')
 
-    def clean_df(self, df: pd.DataFrame) -> pd.DataFrame:
+    def clean_df(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, AdjList]:
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
 
         # sanity check time in increasing order
-        times = df.creation_time.map(DataCleaner._str2time)
-        if not all((d < times[i+1]) for i, d in enumerate(times[:-1])):
-            idxs2tms: Dict[Tuple[int, int], Tuple[str, str]] = dict()
-            # TODO: why this happens? problematic API call?
-            for i, d in enumerate(times[:-1]):
-                if d >= times[i + 1]:
-                    idxs2tms[(i, i + 1)] = (str(d), str(times[i + 1]))
-            if self.verbose:
-                self.logger.warning(f'Time not in increasing order with {logi(idxs2tms)}')
-            # raise ValueError(f'Time not in increasing order with {logi(idxs2tms)}')
+        sort_col = 'creation_time_obj'
+        times = df[sort_col] = df.creation_time.map(DataCleaner._str2time)
+        # the root node creation_time should be the smallest, i.e. after sorting, should remain in the 1st place
+        assert (times[0] < times[1:]).all()
+        graph = DataCleaner._cleaned_df2graph(df)  # Need the original order so that parent for all nodes can be found
+        # mic(df)
+        df = df.sort_values(by=sort_col).drop(sort_col, axis=1).reset_index(drop=True)
+        # mic(df)
 
         i2t = Id2Text(df, enforce_single=False, root_name=self.root_name)
         dup_flag = df.id.value_counts() != 1
@@ -193,7 +189,7 @@ class DataCleaner:
                 self.logger.info(f'Duplicate id found with {logi(d_log)}')
                 row0 = df.loc[idxs[0]].drop(labels='parent_id')
                 assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
-                df = df.drop(idxs[:-1])  # Only keep the bottom-most row, assumed to be most up-to-date
+                df = df.drop(idxs[:-1])  # Only keep the bottom-most row, which is the last modified one
             df = df.reset_index(drop=True)
             assert (df.id.value_counts() == 1).all()  # sanity check
 
@@ -211,7 +207,7 @@ class DataCleaner:
                 assert len(parents) == 1  # sanity check, should have no duplicate
                 return parents.iloc[0].type == 'workset'
         df['parent_is_group'] = df.apply(add_flag, axis=1)
-        return df
+        return df, graph
 
     def clean_single(self, data_path: str, save: bool = False) -> CleanOutput:
         """
@@ -224,25 +220,12 @@ class DataCleaner:
         if len(df) == 1:
             self.logger.info(f'No action entries found with {logi(data_path)}')
         else:
-            df = self.clean_df(df)
+            df, graph = self.clean_df(df)
 
-            graph = DataCleaner._cleaned_df2graph(df)
             i2t = Id2Text(df, root_name=self.root_name)
             root_id = i2t.root_id
-            mic(i2t('urn:uuid:8f829bdf-378c-4ec9-b99f-f70a239feec5'))
-            mic(i2t('urn:uuid:756135cc-743e-438e-ac32-8b7f4190191c'))
 
             graph_txt = {i2t(k): ([i2t(i) for i in v] if v is not None else v) for k, v in graph.items()}
-            mic(graph, graph_txt)
-            graph_txt = dict()
-            for k, v in graph.items():
-                # if k == root_id:
-                #     mic(i2t(k), [i2t(i) for i in v])
-                # graph_txt[i2t(k)] = [i2t(i) for i in v] if v is not None else v
-                if i2t(k) == self.root_name:
-                    mic(k, [i2t(i) for i in v])
-            exit(1)
-            mic(graph_txt)
             path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
             meta = dict(
                 graph=dict(id=graph, name=graph_txt),
@@ -309,11 +292,11 @@ if __name__ == '__main__':
             # date = '2022-03-30'
             date = '2020-10-07'
             fnm = os_join(user_id, f'{date}.csv')
-            sv = False
-            # sv = True
+            # sv = False
+            sv = True
             out = dc.clean_single(data_path=fnm, save=sv)
             df, meta = out.table, out.meta
-            # mic(df, meta)
+            mic(df, meta)
         single()
 
         def all_():
