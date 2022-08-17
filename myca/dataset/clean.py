@@ -156,25 +156,18 @@ class DataCleaner:
                 raise ValueError(f'Parent for node with {logi(row.to_dict())} not found')
         return graph
 
-    @staticmethod
-    def _str2time(t: str) -> datetime:
-        try:
-            return datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S.%f')
-        except ValueError:
-            return datetime.datetime.strptime(t, '%Y-%m-%dT%H:%M:%S')
-
     def clean_df(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, AdjList]:
         df = df.apply(DataCleaner._clean_single_entry, axis=1)
 
         # sanity check time in increasing order
         sort_col = 'creation_time_obj'
-        times = df[sort_col] = df.creation_time.map(DataCleaner._str2time)
+        times = df[sort_col] = df.creation_time.map(str_time2time)
         # the root node creation_time should be the smallest, i.e. after sorting, should remain in the 1st place
         assert (times[0] < times[1:]).all()
         graph = DataCleaner._cleaned_df2graph(df)  # Need the original order so that parent for all nodes can be found
-        # mic(df)
-        df = df.sort_values(by=sort_col).drop(sort_col, axis=1).reset_index(drop=True)
-        # mic(df)
+        # stable sort needed, to respect original API return order in resolving parent,
+        # which also empirically make sense, e.g. `__ROOT__` => `Chores`
+        df = df.sort_values(by=sort_col, kind='stable').drop(sort_col, axis=1).reset_index(drop=True)
 
         i2t = Id2Text(df, enforce_single=False, root_name=self.root_name)
         dup_flag = df.id.value_counts() != 1
@@ -184,6 +177,9 @@ class DataCleaner:
                 # The same id appears in multiple rows, assume it updates the same action entry
                 # the update must be moving the action entry, i.e. changing parent
                 idxs = sorted(df.index[df.id == d].to_list())
+                # mic(df.iloc[idxs])
+                # r1, r2 = df.iloc[idxs[0]], df.iloc[idxs[1]]
+                # mic(i2t(r1.parent_id), i2t(r2.parent_id))
                 parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
                 self.logger.info(f'Duplicate id found with {logi(d_log)}')
@@ -278,31 +274,31 @@ if __name__ == '__main__':
 
         dnm = 'raw, 2022-08-10_09-57-34'
         path = os_join(u.dset_path, dnm)
-        dc = DataCleaner(dataset_path=path, verbose=True, root_name=root_nm)
+        dc = DataCleaner(dataset_path=path, verbose=False, root_name=root_nm)
 
         def single():
             dc.verbose = True
-            user_id = dc.user_ids[2]
+            user_id = dc.user_ids[1]
             mic(user_id)
             # date = dc.uid2dt[user_id][-1]
-            # date = '2021-05-07'
+            date = '2021-05-07'
             # date = '2021-05-21'
             # date = '2022-07-25'
             # date = '2021-09-04'
             # date = '2022-03-30'
-            date = '2020-10-07'
+            # date = '2020-10-07'
             fnm = os_join(user_id, f'{date}.csv')
             # sv = False
             sv = True
             out = dc.clean_single(data_path=fnm, save=sv)
             df, meta = out.table, out.meta
             mic(df, meta)
-        single()
+        # single()
 
         def all_():
             # dc.clean_all(user_id=user_id, save=True)
             uids = get_user_ids(split=e)
             for i in uids:
                 dc.clean_all(i, save=True)
-        # all_()
+        all_()
     clean_up()

@@ -56,7 +56,7 @@ class AggregateOutput:
 class DataAggregator:
     def __init__(
             self, dataset_path: str, output_path: str = os_join(u.dset_path, f'aggregated, {now(for_path=True)}'),
-            verbose: bool = True
+            verbose: bool = True, root_name: str = 'root'
     ):
         self.dataset_path = dataset_path
         self.output_path = output_path
@@ -69,6 +69,8 @@ class DataAggregator:
 
         self.logger = get_logger(self.__class__.__qualname__)
         self.verbose = verbose
+
+        self.root_name = root_name
 
     @staticmethod
     def _parse_nan(x):
@@ -111,32 +113,27 @@ class DataAggregator:
         it = tqdm(paths, desc=f'Processing user {logi(user_id)}', unit='date')
         for p in it:
             date = stem(p)
-            d_log = dict(date=logi(date))
-            it.set_postfix(d_log)
-
             df = pd.read_csv(p)
             for e, t in DataAggregator._df2entries(df.iloc[1:]):  # remove 1st row since not an actual entry
                 if e not in added_entries:  # can't use `set` for
                     added_entries.add(e)
                     date2entries[date].append(e)
                     date2creation_time[date].append(t)
-            d_log.update(dict(n=logi(len(added_entries)), added=logi(len(date2entries[date]))))
-            it.set_postfix(d_log)
-            if date == '2020-10-07':  # TODO: debugging
+            it.set_postfix(dict(n=logi(len(added_entries)), added=logi(len(date2entries[date]))))
+            if date == '2020-10-20':  # TODO: debugging
                 break
         # include the date since the `creation_time` field is influenced by time zone,
         # e.g. timestamp of 10-06 may appear when date 10-05 is queried
         df = pd.DataFrame(sum([[asdict(e) | dict(date=d) for e in lst] for d, lst in date2entries.items()], start=[]))
         df['creation_time'] = sum(date2creation_time.values(), start=[])
         df = df[['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'date']]
-        # mic(df)
 
-        sanity_check = False  # potential "duplicates" all make sense
-        # sanity_check = True
+        # sanity_check = False  # potential "duplicates" all make sense
+        sanity_check = True
         if sanity_check:
             from collections import Counter
             c = Counter(df.text)
-            c = Counter({k: v for k, v in c.items() if v > 10 and k is not None})
+            c = Counter({k: v for k, v in c.items() if v > 1 and k is not None})
             mic(c)
             for txt, cnt in c.most_common():
                 mic(txt, cnt)
@@ -147,7 +144,29 @@ class DataAggregator:
                 with pd.option_context('max_colwidth', 90):
                     mic(r1.compare(r2))
                 mic('')
-            exit(1)
+            # exit(1)
+
+        # In such case, the `labels` changed, the exact same entry is moved in the hierarchy
+        # we keep the last modified version
+        dedup_cols = ['text', 'note', 'link', 'type']
+        dups_all = df[df.duplicated(subset=dedup_cols, keep=False)]
+        n_dup = len(dups_all)
+        mic(dups_all)
+        if not dups_all.empty:
+            idxs_rmv = set(dups_all.index.to_list())
+            grps = dups_all.groupby(dedup_cols).groups
+
+            for grp_key, grp_idxs in grps.items():
+                grp_idxs = grp_idxs.to_list()
+                idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+                idxs_rmv.remove(idx_keep)
+                labels = [json.loads(lb) for lb in df.iloc[grp_idxs]['labels']]
+                self.logger.info(f'Duplicate key {logi(grp_key)} resolved with labels {logi(labels)}')
+            df = df.drop(idxs_rmv)
+            df = df.reset_index(drop=True)
+            assert not (df.duplicated(subset=dedup_cols, keep=False)).any()  # sanity check
+            self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(len(grps))}')
+        exit(1)
 
         # compress hierarchy into necessary changes
         # since date in `Y-m-d`, temporal order maintained
@@ -170,12 +189,14 @@ class DataAggregator:
             d = next(dates, None)
         dates2hierarchy: Dict = {tuple(p.dates): p.hierarchy for p in dates2hierarchy}
         # root node name, see `clean.Id2Text`
-        dates2meta = {k: dict(hierarchy=h, tree=readable_tree(h, root='root')) for k, h in dates2hierarchy.items()}
-        with open(os_join(self.dataset_path, f'{user_id}.json'), 'w') as f:  # tuple not json serializable
-            json.dump({json.dumps(k): v for k, v in dates2meta.items()}, f, indent=4)
+        dates2meta = {
+            k: dict(hierarchy=h, tree=readable_tree(h, root=self.root_name)) for k, h in dates2hierarchy.items()
+        }
 
         if save:
             df.to_csv(os_join(self.output_path, f'{user_id}.csv'), index=False)
+            with open(os_join(self.output_path, f'{user_id}.json'), 'w') as f:  # tuple not json serializable
+                json.dump({json.dumps(k): v for k, v in dates2meta.items()}, f, indent=4)
         return df, dates2meta
 
     def aggregate(self, save: bool = False) -> Dict[str, pd.DataFrame]:
@@ -183,9 +204,9 @@ class DataAggregator:
 
 
 if __name__ == '__main__':
-    dnm = 'cleaned, 2022-08-15_10-49-23'
+    dnm = 'cleaned, 2022-08-17_16-06-12'
     path = os_join(u.dset_path, dnm)
-    da = DataAggregator(dataset_path=path)
+    da = DataAggregator(dataset_path=path, root_name='__ROOT__')
 
     def check_single():
         # user_id = da.user_ids[3]  # most entries/day
