@@ -7,7 +7,7 @@ import boto3
 if __name__ == '__main__':
     from stefutil import *
 
-    path = os.path.join('auth', 'mturk iam access key.csv')
+    path = os.path.join('../auth', 'mturk iam access key.csv')
     df = pd.read_csv(path)
     auth = df.iloc[0, :].to_dict()
     # mic(auth)

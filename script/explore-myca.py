@@ -11,7 +11,7 @@ if __name__ == '__main__':
 
         Would assume those are by a single user
         """
-        path = os.path.join('..', 'dataset', 'categories_user_4 - categories_user_4.csv')
+        path = os.path.join('../..', 'dataset', 'categories_user_4 - categories_user_4.csv')
         df = pd.read_csv(path)
         mic(df)
 
