@@ -176,9 +176,6 @@ class DataCleaner:
                 # The same id appears in multiple rows, assume it updates the same action entry
                 # the update must be moving the action entry, i.e. changing parent
                 idxs = sorted(df.index[df.id == d].to_list())
-                # mic(df.iloc[idxs])
-                # r1, r2 = df.iloc[idxs[0]], df.iloc[idxs[1]]
-                # mic(i2t(r1.parent_id), i2t(r2.parent_id))
                 parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
                 self.logger.info(f'Duplicate id found with {logi(d_log)}')

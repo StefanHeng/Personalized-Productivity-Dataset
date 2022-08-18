@@ -8,7 +8,7 @@ import os
 import glob
 import json
 from os.path import join as os_join
-from typing import Tuple, List, Dict, Union
+from typing import Tuple, List, Dict, Callable, Union, Any
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 
@@ -106,6 +106,48 @@ class DataAggregator:
         ret = {node: [c for c in children if c not in leafs] for node, children in ret.items()}
         return ret
 
+    def _dedup_wrapper(
+            self, df: pd.DataFrame, dedup_columns: List[str],
+            group_callback: Callable[[pd.DataFrame, Dict[str, Any], List[int]], List[int]]
+    ) -> pd.DataFrame:
+        """
+        Wrapper for all deduplication logic
+
+        :param df: dataframe to dedup
+        :param dedup_columns: columns to consider for deduplication
+        :param group_callback: callback to each duplicate group
+            Takes in
+                1. the dataframe
+                2. the duplicated keys in the order of `dedup_columns` as dict
+                3. the indices of the duplicated rows w.r.t. `df`
+            should return indices to drop from `df`, as a subset of the given duplicate indices
+        """
+        dups_all = df[df.duplicated(subset=dedup_columns, keep=False)]
+        if not dups_all.empty:
+            n_dup = len(dups_all)
+            # idxs_rmv = set(dups_all.index.to_list())
+            grps = dups_all.groupby(dedup_columns).groups
+            idxs_rmv = []
+
+            for grp_key, grp_idxs in grps.items():
+                idxs_rmv += group_callback(df, dict(zip(dedup_columns, grp_key)), grp_idxs.to_list())
+            df = df.drop(idxs_rmv)
+            df = df.reset_index(drop=True)
+            assert not (df.duplicated(subset=dedup_columns, keep=False)).any()  # sanity check
+            self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(n_dup - len(idxs_rmv))}')
+        return df
+
+    def _dedup_label_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]):
+        # the last element should be the final label since `creation_time` aligns with df iteration order,
+        # just to be safe
+        idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+        grp_idxs.remove(idx_keep)
+
+        labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
+        if self.verbose:
+            self.logger.info(f'Duplicate key {logi(key)} resolved with labels {logi(labels)}')
+        return grp_idxs
+
     def aggregate_single(self, user_id: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
         paths = self.uid2dt[user_id]
         added_entries = set()
@@ -133,29 +175,37 @@ class DataAggregator:
 
         # In such case, the `labels` changed, the exact same entry is moved in the hierarchy
         # we keep the last modified version
-        dedup_cols = ['text', 'note', 'link', 'type']
+        # dedup_cols = ['text', 'note', 'link', 'type']
+        # dups_all = df[df.duplicated(subset=dedup_cols, keep=False)]
+        # if not dups_all.empty:
+        #     n_dup = len(dups_all)
+        #     idxs_rmv = set(dups_all.index.to_list())
+        #     grps = dups_all.groupby(dedup_cols).groups
+        #
+        #     for grp_key, grp_idxs in grps.items():
+        #         grp_idxs = grp_idxs.to_list()
+        #         # the last element should be the final label since `creation_time` aligns with df iteration order,
+        #         # just to be safe
+        #         idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+        #         idxs_rmv.remove(idx_keep)
+        #
+        #         labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
+        #         key = dict(zip(dedup_cols, grp_key))
+        #         if self.verbose:
+        #             self.logger.info(f'Duplicate key {logi(key)} resolved with labels {logi(labels)}')
+        #     df = df.drop(idxs_rmv)
+        #     df = df.reset_index(drop=True)
+        #     assert not (df.duplicated(subset=dedup_cols, keep=False)).any()  # sanity check
+        #     self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(n_dup - len(idxs_rmv))}')
+        self._dedup_wrapper(df, ['text', 'note', 'link', 'type'], self._dedup_label_change)
+
+        # only difference is `link` change, if the change is between `None` and `[]`, keep the last modified version
+        dedup_cols = ['text', 'note', 'type', 'parent_is_group', 'labels']
         dups_all = df[df.duplicated(subset=dedup_cols, keep=False)]
-        if not dups_all.empty:
-            n_dup = len(dups_all)
-            idxs_rmv = set(dups_all.index.to_list())
-            grps = dups_all.groupby(dedup_cols).groups
+        mic(dups_all, len(dups_all))
 
-            for grp_key, grp_idxs in grps.items():
-                grp_idxs = grp_idxs.to_list()
-                idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
-                idxs_rmv.remove(idx_keep)
-                # since `creation_time` aligns with df iteration order, the last element should be the final label
-                labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-                key = dict(zip(dedup_cols, grp_key))
-                if self.verbose:
-                    self.logger.info(f'Duplicate key {logi(key)} resolved with labels {logi(labels)}')
-            df = df.drop(idxs_rmv)
-            df = df.reset_index(drop=True)
-            assert not (df.duplicated(subset=dedup_cols, keep=False)).any()  # sanity check
-            self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(len(grps))}')
-
-        sanity_check = False  # potential "duplicates" all make sense
-        # sanity_check = True
+        # sanity_check = False  # potential "duplicates" all make sense
+        sanity_check = True
         if sanity_check:
             from collections import Counter
             c = Counter(df.text)
@@ -216,9 +266,9 @@ if __name__ == '__main__':
         # user_id = da.user_ids[3]  # most entries/day
         user_id = da.user_ids[2]  # least entries/day
         da.aggregate_single(user_id=user_id)
-    # check_single()
+    check_single()
 
-    da.aggregate(save=True)
+    # da.aggregate(save=True)
 
     def check_data_class():
         e1, e2, e3 = ActionEntry(note='a'), ActionEntry(note='a'), ActionEntry(note='b')
