@@ -8,11 +8,12 @@ import os
 import glob
 import json
 from os.path import join as os_join
-from typing import Tuple, List, Dict, Callable, Union, Any
+from typing import Tuple, List, Set, Dict, Callable, Union, Any
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 
 import pandas as pd
+from bs4 import BeautifulSoup
 from tqdm.auto import tqdm
 
 from stefutil import *
@@ -56,7 +57,17 @@ class AggregateOutput:
     hierarchy: Dict[str, Dict[str, Union[AdjList, Tuple]]] = None
 
 
+def _get_all_tags(rich_txt: str) -> Set[str]:
+    soup = BeautifulSoup(rich_txt, "html.parser")
+    s = set()
+    for e in soup.find_all():
+        s.add(e.name)
+    return s
+
+
 class DataAggregator:
+    _meaningless_tags = {'p', 'br'}
+
     def __init__(
             self, dataset_path: str, output_path: str = os_join(u.dset_path, f'aggregated, {now(for_path=True)}'),
             verbose: bool = False, root_name: str = 'root'
@@ -108,7 +119,7 @@ class DataAggregator:
 
     def _dedup_wrapper(
             self, df: pd.DataFrame, dedup_columns: List[str],
-            group_callback: Callable[[pd.DataFrame, Dict[str, Any], List[int]], List[int]]
+            group_callback: Callable[[pd.DataFrame, Dict[str, Any], List[int]], List[int]], strict: bool = True
     ) -> pd.DataFrame:
         """
         Wrapper for all deduplication logic
@@ -123,6 +134,7 @@ class DataAggregator:
             should return indices to drop from `df`, as a subset of the given duplicate indices
         """
         dups_all = df[df.duplicated(subset=dedup_columns, keep=False)]
+        mic(dups_all, len(dups_all))
         if not dups_all.empty:
             n_dup = len(dups_all)
             # idxs_rmv = set(dups_all.index.to_list())
@@ -133,20 +145,72 @@ class DataAggregator:
                 idxs_rmv += group_callback(df, dict(zip(dedup_columns, grp_key)), grp_idxs.to_list())
             df = df.drop(idxs_rmv)
             df = df.reset_index(drop=True)
-            assert not (df.duplicated(subset=dedup_columns, keep=False)).any()  # sanity check
+            if strict:
+                assert not (df.duplicated(subset=dedup_columns, keep=False)).any()  # sanity check
             self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(n_dup - len(idxs_rmv))}')
         return df
 
-    def _dedup_label_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]):
+    def _dedup_label_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
         # the last element should be the final label since `creation_time` aligns with df iteration order,
         # just to be safe
         idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
         grp_idxs.remove(idx_keep)
 
-        labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
         if self.verbose:
-            self.logger.info(f'Duplicate key {logi(key)} resolved with labels {logi(labels)}')
+            labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
+            self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("labels", c="m")} {logi(labels)}')
         return grp_idxs
+
+    @staticmethod
+    def no_link(val) -> bool:
+        return val is None or val == '[]'
+
+    def _dedup_link_semi_same(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
+        links = df.iloc[grp_idxs]['link']
+        if links.map(lambda lk: DataAggregator.no_link(lk)).all():
+            idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+            grp_idxs.remove(idx_keep)
+
+            if self.verbose:
+                links = links.values.tolist()
+                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("links", c="m")} {logi(links)}')
+            return grp_idxs
+        else:  # some `links` field is meaningful
+            raise NotImplementedError('links field is meaningful')
+
+    def _dedup_type_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
+        types = df.iloc[grp_idxs]['type']
+        if types.map(lambda t: t is None or t in ['workset', 'workette']).all():
+            idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+            grp_idxs.remove(idx_keep)
+
+            if self.verbose:
+                types = types.values.tolist()
+                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("types", c="m")} {logi(types)}')
+            return grp_idxs
+        else:  # some `types` field is special
+            raise NotImplementedError('types field unexpected')
+
+    @staticmethod
+    def no_note(val) -> bool:
+        return val is None or _get_all_tags(val) == DataAggregator._meaningless_tags
+
+    def _dedup_note_semi_same(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
+        rows = df.iloc[grp_idxs]
+        notes = rows['note']
+        flags = notes.map(lambda nt: DataAggregator.no_note(nt))
+
+        if flags.all():
+            idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+            grp_idxs.remove(idx_keep)
+
+            if self.verbose:
+                notes = notes.values.tolist()
+                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("notes", c="m")} {logi(notes)}')
+            return grp_idxs
+        else:  # some `notes` field is meaningful
+            # TODO: deal with multiple meaningful notes
+            return rows[flags].index.to_list()  # just drop the rows with meaningless notes
 
     def aggregate_single(self, user_id: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
         paths = self.uid2dt[user_id]
@@ -173,36 +237,19 @@ class DataAggregator:
         df['creation_time'] = sum(date2creation_time.values(), start=[])
         df = df[['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'date']]
 
-        # In such case, the `labels` changed, the exact same entry is moved in the hierarchy
-        # we keep the last modified version
-        # dedup_cols = ['text', 'note', 'link', 'type']
-        # dups_all = df[df.duplicated(subset=dedup_cols, keep=False)]
-        # if not dups_all.empty:
-        #     n_dup = len(dups_all)
-        #     idxs_rmv = set(dups_all.index.to_list())
-        #     grps = dups_all.groupby(dedup_cols).groups
-        #
-        #     for grp_key, grp_idxs in grps.items():
-        #         grp_idxs = grp_idxs.to_list()
-        #         # the last element should be the final label since `creation_time` aligns with df iteration order,
-        #         # just to be safe
-        #         idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
-        #         idxs_rmv.remove(idx_keep)
-        #
-        #         labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-        #         key = dict(zip(dedup_cols, grp_key))
-        #         if self.verbose:
-        #             self.logger.info(f'Duplicate key {logi(key)} resolved with labels {logi(labels)}')
-        #     df = df.drop(idxs_rmv)
-        #     df = df.reset_index(drop=True)
-        #     assert not (df.duplicated(subset=dedup_cols, keep=False)).any()  # sanity check
-        #     self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(n_dup - len(idxs_rmv))}')
-        self._dedup_wrapper(df, ['text', 'note', 'link', 'type'], self._dedup_label_change)
-
-        # only difference is `link` change, if the change is between `None` and `[]`, keep the last modified version
-        dedup_cols = ['text', 'note', 'type', 'parent_is_group', 'labels']
-        dups_all = df[df.duplicated(subset=dedup_cols, keep=False)]
-        mic(dups_all, len(dups_all))
+        # only the `labels` changed, i.e. the exact same entry is moved in the hierarchy
+        # => keep the last modified version
+        # note that we ignore `date` field for dedup
+        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'type'], self._dedup_label_change)
+        # only difference is `link` change, if the change is between `None` and `[]` consider as duplicates
+        # => keep the last modified version
+        df = self._dedup_wrapper(df, ['text', 'note', 'type', 'parent_is_group', 'labels'], self._dedup_link_semi_same)
+        # only difference is `type`, pbb cos user cleans up the hierarchy => keep the last modified version
+        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'parent_is_group', 'labels'], self._dedup_type_change)
+        # `note` changes, from None to a rich text with no real content, consider as duplicates
+        df = self._dedup_wrapper(
+            df, ['text', 'type', 'link', 'parent_is_group', 'labels'], self._dedup_note_semi_same, strict=False
+        )
 
         # sanity_check = False  # potential "duplicates" all make sense
         sanity_check = True
@@ -258,9 +305,9 @@ class DataAggregator:
 
 
 if __name__ == '__main__':
-    dnm = 'cleaned, 2022-08-17_16-06-12'
+    dnm = 'cleaned, 2022-08-18_13-59-24'
     path = os_join(u.dset_path, dnm)
-    da = DataAggregator(dataset_path=path, root_name='__ROOT__')
+    da = DataAggregator(dataset_path=path, root_name='__ROOT__', verbose=True)
 
     def check_single():
         # user_id = da.user_ids[3]  # most entries/day

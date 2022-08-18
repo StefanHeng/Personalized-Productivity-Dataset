@@ -94,6 +94,10 @@ class DataCleaner:
     """
     Clean up the raw dataset (see `DataWriter`) from a given date into our format
     """
+    # `item` is `workette`, `group` is `workset`, `item` are front end names,
+    # TODO: should not even appear in backend API call in the first place...
+    _type_fe2type_be = dict(group='workset', item='workette')
+
     def __init__(
             self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(for_path=True)}'),
             verbose: bool = True, root_name: str = 'root'
@@ -113,15 +117,22 @@ class DataCleaner:
 
         self.root_name = root_name
 
-    @staticmethod
-    def _clean_single_entry(entry: pd.Series) -> pd.Series:
+    def _map_type(self, t: str) -> str:
+        if t in DataCleaner._type_fe2type_be:
+            t_ = DataCleaner._type_fe2type_be[t]
+            self.logger.warning(f'Front End name {logi(t)} appeared, converted to {logi(t_)}')
+            return t_
+        else:
+            return t
+
+    def _clean_single_entry(self, entry: pd.Series) -> pd.Series:
         return pd.Series(dict(
             id=entry['jid'],  # id of the action entry
             text=entry['context.name'],  # actual text for the action entry
             note=entry['context.note'],
             link=entry.get('context.links', None),  # earlier entries don't contain field `links`
             creation_time=entry['j_timestamp'],
-            type=entry['context.wtype'],  # UI type of the entry
+            type=self._map_type(entry['context.wtype']),  # UI type of the entry
             parent_id=entry['field1']  # by API call design
         ))
 
@@ -143,7 +154,6 @@ class DataCleaner:
                     graph[parent].append(id_)
                     # workset & workette are types for root-level group, internal group respectively;
                     # Practically anything can have children
-                    # TODO: `item` is `workette`, `group` is `workset`, `item` should not appear in backend API call...
                     # TODO: empirically found entries **w/ no type** and w/ children?
                     typ = row.type
                     can_have_child = typ in ['workset', 'workette', 'note', 'link', 'item'] or is_nan(typ)
@@ -156,7 +166,7 @@ class DataCleaner:
         return graph
 
     def clean_df(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, AdjList]:
-        df = df.apply(DataCleaner._clean_single_entry, axis=1)
+        df = df.apply(self._clean_single_entry, axis=1)
 
         # sanity check time in increasing order
         sort_col = 'creation_time_obj'
