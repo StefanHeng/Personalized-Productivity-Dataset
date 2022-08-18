@@ -134,10 +134,8 @@ class DataAggregator:
             should return indices to drop from `df`, as a subset of the given duplicate indices
         """
         dups_all = df[df.duplicated(subset=dedup_columns, keep=False)]
-        mic(dups_all, len(dups_all))
         if not dups_all.empty:
             n_dup = len(dups_all)
-            # idxs_rmv = set(dups_all.index.to_list())
             grps = dups_all.groupby(dedup_columns).groups
             idxs_rmv = []
 
@@ -165,9 +163,30 @@ class DataAggregator:
     def no_link(val) -> bool:
         return val is None or val == '[]'
 
+    @staticmethod
+    def _sanity_check_remove_none(
+            df: pd.DataFrame, grp_idxs: List[int], flags: pd.Series, strict: bool = True
+    ) -> List[int]:
+        """
+        During duplicate removal, if the field in question for **some** row is meaningful,
+            remove the fields that are meaningless
+
+        :return: Indices to remove
+        """
+        rows = df.iloc[grp_idxs]
+        if strict:
+            idxs_none = flags.index[flags].to_list()
+            times = rows.creation_time.map(str_time2time)[~flags]
+            # the rows with meaningless field should appear at the earliest date than the rows with field
+            # TODO: not always the case??
+            for i_none in idxs_none:
+                assert str_time2time(df.iloc[i_none].creation_time) < times.min()
+        return rows[flags].index.to_list()  # drop the row with None
+
     def _dedup_link_semi_same(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
         links = df.iloc[grp_idxs]['link']
-        if links.map(lambda lk: DataAggregator.no_link(lk)).all():
+        flags = links.map(lambda lk: DataAggregator.no_link(lk))
+        if flags.all():
             idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
             grp_idxs.remove(idx_keep)
 
@@ -175,8 +194,12 @@ class DataAggregator:
                 links = links.values.tolist()
                 self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("links", c="m")} {logi(links)}')
             return grp_idxs
-        else:  # some `links` field is meaningful
-            raise NotImplementedError('links field is meaningful')
+        else:  # some or all `links` field is meaningful
+            mic(links, df.iloc[grp_idxs])
+            if flags.any():
+                return DataAggregator._sanity_check_remove_none(df, grp_idxs, flags, strict=False)
+            else:
+                return []  # no rows should be dropped
 
     def _dedup_type_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
         types = df.iloc[grp_idxs]['type']
@@ -188,8 +211,12 @@ class DataAggregator:
                 types = types.values.tolist()
                 self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("types", c="m")} {logi(types)}')
             return grp_idxs
-        else:  # some `types` field is special
-            raise NotImplementedError('types field unexpected')
+        else:  # some or all `types` field is special
+            flags = types.map(lambda t: t is None)
+            if flags.any():  # e.g. `None` => `note`
+                return DataAggregator._sanity_check_remove_none(df, grp_idxs, flags)
+            else:
+                return []
 
     @staticmethod
     def no_note(val) -> bool:
@@ -219,7 +246,7 @@ class DataAggregator:
         date2entries: Dict[str, List[ActionEntry]] = defaultdict(list)
         date2creation_time: Dict[str, List[str]] = defaultdict(list)
 
-        it = tqdm(paths, desc=f'Processing user {logi(user_id)}', unit='date')
+        it = tqdm(paths, desc=f'Aggregating for user {logi(user_id)}', unit='date')
         for p in it:
             date = stem(p)
             df = pd.read_csv(p)
@@ -245,14 +272,14 @@ class DataAggregator:
         # => keep the last modified version
         df = self._dedup_wrapper(df, ['text', 'note', 'type', 'parent_is_group', 'labels'], self._dedup_link_semi_same)
         # only difference is `type`, pbb cos user cleans up the hierarchy => keep the last modified version
-        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'parent_is_group', 'labels'], self._dedup_type_change)
+        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'parent_is_group', 'labels'], self._dedup_type_change, strict=False)
         # `note` changes, from None to a rich text with no real content, consider as duplicates
         df = self._dedup_wrapper(
             df, ['text', 'type', 'link', 'parent_is_group', 'labels'], self._dedup_note_semi_same, strict=False
         )
 
-        # sanity_check = False  # potential "duplicates" all make sense
-        sanity_check = True
+        sanity_check = False  # potential "duplicates" all make sense
+        # sanity_check = True
         if sanity_check:
             from collections import Counter
             c = Counter(df.text)
@@ -313,9 +340,9 @@ if __name__ == '__main__':
         # user_id = da.user_ids[3]  # most entries/day
         user_id = da.user_ids[2]  # least entries/day
         da.aggregate_single(user_id=user_id)
-    check_single()
+    # check_single()
 
-    # da.aggregate(save=True)
+    da.aggregate(save=True)
 
     def check_data_class():
         e1, e2, e3 = ActionEntry(note='a'), ActionEntry(note='a'), ActionEntry(note='b')
