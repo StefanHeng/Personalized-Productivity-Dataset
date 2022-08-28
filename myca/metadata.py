@@ -42,8 +42,6 @@ def get_stats(dataset: Dict[str, pd.DataFrame], save: bool = False) -> Tuple[pd.
         n_day = len(set(df_.date))
 
         all_labels: Iterable[List[str]] = df_.labels[df_.labels.notnull()].map(json.loads)
-        # mic(set().union(*[to_tokens(x) for x in df.text]), set(df.date), set().union(*list(labels)))
-        # labels = set().union(*list(all_labels))
         all_label: List[str] = sum(all_labels, start=[])
         n_labels_token = sum(len(to_tokens(x)) for x in all_label)
         avg_n_labels_token = n_labels_token / n_entries
@@ -51,30 +49,25 @@ def get_stats(dataset: Dict[str, pd.DataFrame], save: bool = False) -> Tuple[pd.
         avg_n_label = n_label / n_entries
         label2cnt = Counter(all_label)
         uniq_labels = list(label2cnt.keys())  # Order by frequency
-        # mic(label2cnt)
-        # mic(uniq_labels)
         n_uniq_label = len(label2cnt)
         level2label2cnt = defaultdict(Counter)
         for lbs in all_labels:
             for lvl, lb in enumerate(lbs):
                 level2label2cnt[lvl][lb] += 1
-        # mic(level2label2cnt)
         level2uniq_labels = {lvl: list(l2c.keys()) for lvl, l2c in level2label2cnt.items()}
         level2n_uniq_label = {lvl: len(l2c) for lvl, l2c in level2label2cnt.items()}
-        # mic(n_entries, n_text_token, n_text_uniq_token, n_day, uniq_labels, n_uniq_label, level2uniq_labels, level2n_label)
-        # mic(n_label, avg_n_text_token, avg_n_labels_token, avg_n_label)
         return StatsOutput(
             stats=dict(
+                n_day=n_day,  # #days the myca snapshot changes
                 n_entries=n_entries,  # #action entries
                 n_text_token=n_text_token,  # total #token for all entries
                 n_text_uniq_token=n_text_uniq_token,  # #unique token across all entries
                 avg_n_text_token=avg_n_text_token,  # avg #token for each entry
-                n_day=n_day,  # #days the myca snapshot changes
                 n_label=n_label,  # #labels for all entries
-                n_uniq_label=n_uniq_label,  # #unique labels across all entries
-                level2n_uniq_label=level2n_uniq_label,  # #unique labels for each level
+                avg_n_label=avg_n_label,  # avg #label for each entry
                 avg_n_labels_token=avg_n_labels_token,  # avg #token for each label
-                avg_n_label=avg_n_label  # avg #label for each entry
+                n_uniq_label=n_uniq_label,  # #unique labels across all entries
+                level2n_uniq_label=level2n_uniq_label  # #unique labels for each level
             ),
             collection={
                 'uniq-labels': uniq_labels,  # list of unique labels across all entries, ordered by frequency
