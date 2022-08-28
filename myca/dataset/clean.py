@@ -244,7 +244,24 @@ class DataCleaner:
             }
             # note since label based on path, the order in label list implies nested level
             id2lbs = {k: [i2t(i) for i in v] if v else None for k, v in get(meta, 'path-exclusive.id').items()}
-            df['labels'] = df.id.apply(lambda i: json.dumps(id2lbs[i]))
+            df['labels'] = df.id.apply(lambda i: id2lbs[i])
+
+            lb2is_group = {row.text: row.type == 'workset' for i, row in df.iloc[1:].iterrows()}  # skip 1st special row
+
+            def label_map(row: pd.Series) -> Optional[List[str]]:
+                labels = row.labels
+                if labels is None:
+                    return
+                else:
+                    ret = []
+                    for lb in labels:
+                        if lb2is_group[lb]:  # must exist in the dict by construction
+                            ret.append(lb)
+                        else:
+                            break
+                    return ret
+            df['workset_only_labels'] = df.apply(label_map, axis=1).map(json.dumps)  # up until all `group` names
+            df.labels = df.labels.map(json.dumps)
 
             if save:
                 if os.sep in data_path:
@@ -275,6 +292,8 @@ if __name__ == '__main__':
     root_nm = '__ROOT__'
 
     def clean_up():
+        pd.set_option('display.min_rows', 16)
+
         # e = 'dev'
         e = 'prod'
 

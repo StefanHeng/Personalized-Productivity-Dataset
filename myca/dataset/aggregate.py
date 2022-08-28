@@ -43,6 +43,7 @@ class ActionEntry:
     type: str = None
     parent_is_group: bool = False
     labels: str = None  # Keep as json string for hashing
+    workset_only_labels: str = None
 
 
 @dataclass
@@ -95,8 +96,7 @@ class DataAggregator:
         return [(
             ActionEntry(
                 **{k: DataAggregator._parse_nan(row[k]) for k in [
-                    'text', 'note', 'link', 'type', 'parent_is_group', 'labels'
-                    # 'text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels'
+                    'text', 'note', 'link', 'type', 'parent_is_group', 'labels', 'workset_only_labels'
                 ]}
             ), row.creation_time
         ) for _, row in df.iterrows()]
@@ -266,7 +266,8 @@ class DataAggregator:
         # e.g. timestamp of 10-06 may appear when date 10-05 is queried
         df = pd.DataFrame(sum([[asdict(e) | dict(date=d) for e in lst] for d, lst in date2entries.items()], start=[]))
         df['creation_time'] = sum(date2creation_time.values(), start=[])
-        df = df[['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'date']]
+        cols = ['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'workset_only_labels']
+        df = df[cols + ['date']]
 
         # only the `labels` changed, i.e. the exact same entry is moved in the hierarchy
         # => keep the last modified version
@@ -348,7 +349,9 @@ class DataAggregator:
 
 
 if __name__ == '__main__':
-    dnm = 'cleaned, 2022-08-18_13-59-24'
+    pd.set_option('display.min_rows', 16)
+
+    dnm = 'cleaned, 2022-08-28_23-11-48'
     path = os_join(u.dset_path, dnm)
     da = DataAggregator(dataset_path=path, root_name='__ROOT__')
 
