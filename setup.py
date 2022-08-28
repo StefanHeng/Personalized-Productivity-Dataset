@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 DESCRIPTION = 'Personalized Text Classification dataset'
 LONG_DESCRIPTION = 'Personalized Text Classification dataset with transient labels inspired by Myca productivity tool'
 
@@ -13,7 +13,7 @@ setup(
     description=DESCRIPTION,
     long_description=LONG_DESCRIPTION,
     url='https://github.com/StefanHeng/Personalized-Productivity-Dataset',
-    download_url='https://github.com/StefanHeng/Personalized-Productivity-Dataset/archive/refs/tags/v0.1.0.tar.gz',
+    download_url='https://github.com/StefanHeng/Personalized-Productivity-Dataset/archive/refs/tags/v0.1.1.tar.gz',
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
