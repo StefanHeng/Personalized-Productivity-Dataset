@@ -58,7 +58,7 @@ class AggregateOutput:
 
 
 def _get_all_tags(rich_txt: str) -> Set[str]:
-    soup = BeautifulSoup(rich_txt, "html.parser")
+    soup = BeautifulSoup(rich_txt, 'html.parser')
     s = set()
     for e in soup.find_all():
         s.add(e.name)
@@ -118,8 +118,9 @@ class DataAggregator:
         return ret
 
     def _dedup_wrapper(
-            self, df: pd.DataFrame, dedup_columns: List[str],
-            group_callback: Callable[[pd.DataFrame, Dict[str, Any], List[int]], List[int]], strict: bool = True
+            self, df: pd.DataFrame, dedup_columns: List[str] = None,
+            group_callback: Callable[[pd.DataFrame, Dict[str, Any], List[int]], List[int]] = None,
+            strict: bool = True, focus_column: str = None
     ) -> pd.DataFrame:
         """
         Wrapper for all deduplication logic
@@ -145,7 +146,11 @@ class DataAggregator:
             df = df.reset_index(drop=True)
             if strict:
                 assert not (df.duplicated(subset=dedup_columns, keep=False)).any()  # sanity check
-            self.logger.info(f'{logi(n_dup)} duplicate entries reduced to {logi(n_dup - len(idxs_rmv))}')
+            if focus_column:
+                e_str = f'{logi(focus_column)} entries'
+            else:
+                e_str = 'entries'
+            self.logger.info(f'{logi(n_dup)} duplicate {e_str} reduced to {logi(n_dup - len(idxs_rmv))}')
         return df
 
     def _dedup_label_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
@@ -195,7 +200,6 @@ class DataAggregator:
                 self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("links", c="m")} {logi(links)}')
             return grp_idxs
         else:  # some or all `links` field is meaningful
-            mic(links, df.iloc[grp_idxs])
             if flags.any():
                 return DataAggregator._sanity_check_remove_none(df, grp_idxs, flags, strict=False)
             else:
@@ -246,7 +250,7 @@ class DataAggregator:
         date2entries: Dict[str, List[ActionEntry]] = defaultdict(list)
         date2creation_time: Dict[str, List[str]] = defaultdict(list)
 
-        it = tqdm(paths, desc=f'Aggregating for user {logi(user_id)}', unit='date')
+        it = tqdm(paths, desc=f'Merging entries for user {logi(user_id)}', unit='date')
         for p in it:
             date = stem(p)
             df = pd.read_csv(p)
@@ -267,15 +271,25 @@ class DataAggregator:
         # only the `labels` changed, i.e. the exact same entry is moved in the hierarchy
         # => keep the last modified version
         # note that we ignore `date` field for dedup
-        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'type'], self._dedup_label_change)
+        df = self._dedup_wrapper(
+            df, dedup_columns=['text', 'note', 'link', 'type'], group_callback=self._dedup_label_change,
+            focus_column='labels'
+        )
         # only difference is `link` change, if the change is between `None` and `[]` consider as duplicates
         # => keep the last modified version
-        df = self._dedup_wrapper(df, ['text', 'note', 'type', 'parent_is_group', 'labels'], self._dedup_link_semi_same)
+        df = self._dedup_wrapper(
+            df, dedup_columns=['text', 'note', 'type', 'parent_is_group', 'labels'],
+            group_callback=self._dedup_link_semi_same, focus_column='link'
+        )
         # only difference is `type`, pbb cos user cleans up the hierarchy => keep the last modified version
-        df = self._dedup_wrapper(df, ['text', 'note', 'link', 'parent_is_group', 'labels'], self._dedup_type_change, strict=False)
+        df = self._dedup_wrapper(
+            df, dedup_columns=['text', 'note', 'link', 'parent_is_group', 'labels'],
+            group_callback=self._dedup_type_change, focus_column='type', strict=False
+        )
         # `note` changes, from None to a rich text with no real content, consider as duplicates
         df = self._dedup_wrapper(
-            df, ['text', 'type', 'link', 'parent_is_group', 'labels'], self._dedup_note_semi_same, strict=False
+            df, dedup_columns=['text', 'type', 'link', 'parent_is_group', 'labels'],
+            group_callback=self._dedup_note_semi_same, focus_column='note', strict=False
         )
 
         sanity_check = False  # potential "duplicates" all make sense
@@ -320,6 +334,8 @@ class DataAggregator:
         dates2meta = {
             k: dict(hierarchy=h, tree=readable_tree(h, root=self.root_name)) for k, h in dates2hierarchy.items()
         }
+        d_log = {'#entry': len(df), '#hiearchy': len(dates2hierarchy)}
+        self.logger.info(f'Aggregation for user {logi(user_id)} completed with {logi(d_log)}')
 
         if save:
             df.to_csv(os_join(self.output_path, f'{user_id}.csv'), index=False)
@@ -334,9 +350,10 @@ class DataAggregator:
 if __name__ == '__main__':
     dnm = 'cleaned, 2022-08-18_13-59-24'
     path = os_join(u.dset_path, dnm)
-    da = DataAggregator(dataset_path=path, root_name='__ROOT__', verbose=True)
+    da = DataAggregator(dataset_path=path, root_name='__ROOT__')
 
     def check_single():
+        da.verbose = True
         # user_id = da.user_ids[3]  # most entries/day
         user_id = da.user_ids[2]  # least entries/day
         da.aggregate_single(user_id=user_id)

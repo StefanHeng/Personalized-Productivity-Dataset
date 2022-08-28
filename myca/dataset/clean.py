@@ -20,7 +20,7 @@ from myca.util import *
 from myca.dataset.util import *
 
 
-__all__ = ['readable_tree', 'DataCleaner']
+__all__ = ['Id2Text', 'readable_tree', 'DataCleaner']
 
 
 @dataclass
