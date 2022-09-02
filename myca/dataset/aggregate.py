@@ -44,6 +44,7 @@ class ActionEntry:
     parent_is_group: bool = False
     labels: str = None  # Keep as json string for hashing
     workset_only_labels: str = None
+    is_focus: bool = None
 
 
 @dataclass
@@ -68,9 +69,10 @@ def _get_all_tags(rich_txt: str) -> Set[str]:
 
 class DataAggregator:
     _meaningless_tags = {'p', 'br'}
+    IGNORE_IS_FOCUS = True
 
     def __init__(
-            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'aggregated, {now(for_path=True)}'),
+            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'aggregated, {now(fmt="short-date")}'),
             verbose: bool = False, root_name: str = 'root'
     ):
         self.dataset_path = dataset_path
@@ -96,7 +98,7 @@ class DataAggregator:
         return [(
             ActionEntry(
                 **{k: DataAggregator._parse_nan(row[k]) for k in [
-                    'text', 'note', 'link', 'type', 'parent_is_group', 'labels', 'workset_only_labels'
+                    'text', 'note', 'link', 'type', 'is_focus', 'parent_is_group', 'labels', 'workset_only_labels'
                 ]}
             ), row.creation_time
         ) for _, row in df.iterrows()]
@@ -157,11 +159,23 @@ class DataAggregator:
         # the last element should be the final label since `creation_time` aligns with df iteration order,
         # just to be safe
         idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
-        grp_idxs.remove(idx_keep)
 
         if self.verbose:
-            labels = [('' if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
+            labels = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
             self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("labels", c="m")} {logi(labels)}')
+        grp_idxs.remove(idx_keep)
+        return grp_idxs
+
+    def _dedup_is_focus_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
+        # just take the last one, whichever doesn't seem to matter much
+        idx_keep = max(grp_idxs, key=lambda i: str_time2time(df.iloc[i]['creation_time']))
+
+        if self.verbose:
+            # mic(grp_idxs, df.iloc[grp_idxs]['is_focus'])
+            # exit(1)
+            is_focus = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
+            self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("is_focus", c="m")} {logi(is_focus)}')
+        grp_idxs.remove(idx_keep)
         return grp_idxs
 
     @staticmethod
@@ -266,32 +280,49 @@ class DataAggregator:
         # e.g. timestamp of 10-06 may appear when date 10-05 is queried
         df = pd.DataFrame(sum([[asdict(e) | dict(date=d) for e in lst] for d, lst in date2entries.items()], start=[]))
         df['creation_time'] = sum(date2creation_time.values(), start=[])
-        cols = ['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'workset_only_labels']
-        df = df[cols + ['date']]
+        # cols = ['text', 'note', 'link', 'creation_time', 'type', 'parent_is_group', 'labels', 'workset_only_labels']
+        # df = df[cols + ['date']]
+        cols = ['text', 'note', 'link', 'creation_time', 'type', 'is_focus', 'parent_is_group', 'labels']
+        df = df[cols + ['workset_only_labels', 'date']]
 
         # only the `labels` changed, i.e. the exact same entry is moved in the hierarchy
         # => keep the last modified version
         # note that we ignore `date` field for dedup
-        df = self._dedup_wrapper(
-            df, dedup_columns=['text', 'note', 'link', 'type'], group_callback=self._dedup_label_change,
-            focus_column='labels'
-        )
+        # set of properties that uniquely identify an entry:
+        #   ['text', 'note', 'link', 'type', 'is_focus', 'parent_is_group', 'labels']
+        # for now, just ignore `is_focus` field for dedup, TODO
+        # otherwise, in case e.g. `type` and `is_focus` changes at the same time, both entries are kept
+        ignore_focus = DataAggregator.IGNORE_IS_FOCUS
+        cols = ['text', 'note', 'link', 'type'] if ignore_focus else ['text', 'note', 'link', 'type', 'is_focus']
+        df = self._dedup_wrapper(df, dedup_columns=cols, group_callback=self._dedup_label_change, focus_column='labels')
         # only difference is `link` change, if the change is between `None` and `[]` consider as duplicates
         # => keep the last modified version
-        df = self._dedup_wrapper(
-            df, dedup_columns=['text', 'note', 'type', 'parent_is_group', 'labels'],
-            group_callback=self._dedup_link_semi_same, focus_column='link'
-        )
+        if ignore_focus:
+            cols = ['text', 'note', 'type', 'parent_is_group', 'labels']
+        else:
+            cols = ['text', 'note', 'type', 'is_focus', 'parent_is_group', 'labels']
+        df = self._dedup_wrapper(df, dedup_columns=cols, group_callback=self._dedup_link_semi_same, focus_column='link')
         # only difference is `type`, pbb cos user cleans up the hierarchy => keep the last modified version
+        if ignore_focus:
+            cols = ['text', 'note', 'link', 'parent_is_group', 'labels']
+        else:
+            cols = ['text', 'note', 'link', 'is_focus', 'parent_is_group', 'labels']
         df = self._dedup_wrapper(
-            df, dedup_columns=['text', 'note', 'link', 'parent_is_group', 'labels'],
-            group_callback=self._dedup_type_change, focus_column='type', strict=False
+            df, dedup_columns=cols, group_callback=self._dedup_type_change, focus_column='type', strict=False
         )
         # `note` changes, from None to a rich text with no real content, consider as duplicates
+        if ignore_focus:
+            cols = ['text', 'type', 'link', 'parent_is_group', 'labels']
+        else:
+            cols = ['text', 'link', 'type', 'is_focus', 'parent_is_group', 'labels']
         df = self._dedup_wrapper(
-            df, dedup_columns=['text', 'type', 'link', 'parent_is_group', 'labels'],
-            group_callback=self._dedup_note_semi_same, focus_column='note', strict=False
+            df, dedup_columns=cols, group_callback=self._dedup_note_semi_same, focus_column='note', strict=False
         )
+        if not ignore_focus:
+            df = self._dedup_wrapper(
+                df, dedup_columns=['text', 'note', 'link', 'type', 'parent_is_group', 'labels'],
+                group_callback=self._dedup_is_focus_change, focus_column='is_focus'
+            )
 
         sanity_check = False  # potential "duplicates" all make sense
         # sanity_check = True
@@ -344,14 +375,14 @@ class DataAggregator:
                 json.dump({json.dumps(k): v for k, v in dates2meta.items()}, f, indent=4)
         return df, dates2meta
 
-    def aggregate(self, save: bool = False) -> Dict[str, pd.DataFrame]:
+    def aggregate(self, save: bool = False) -> Dict[str, Tuple[pd.DataFrame, Dict]]:
         return {uid: self.aggregate_single(uid, save) for uid in self.user_ids}
 
 
 if __name__ == '__main__':
-    pd.set_option('display.min_rows', 16)
-
-    dnm = 'cleaned, 2022-08-28_23-11-48'
+    # dnm = 'cleaned, 2022-08-28_23-11-48'
+    # dnm = 'cleaned, 2022-09-01_21-58-41'
+    dnm = 'cleaned, 22-09-02'
     path = os_join(u.dset_path, dnm)
     da = DataAggregator(dataset_path=path, root_name='__ROOT__')
 
@@ -359,10 +390,14 @@ if __name__ == '__main__':
         da.verbose = True
         # user_id = da.user_ids[3]  # most entries/day
         user_id = da.user_ids[2]  # least entries/day
-        da.aggregate_single(user_id=user_id)
+        df = da.aggregate_single(user_id=user_id)[0]
+        mic(len(df))
     # check_single()
 
-    da.aggregate(save=True)
+    def run():
+        d = da.aggregate(save=True)
+        mic({k: len(v[0]) for k, v in d.items()})
+    run()
 
     def check_data_class():
         e1, e2, e3 = ActionEntry(note='a'), ActionEntry(note='a'), ActionEntry(note='b')

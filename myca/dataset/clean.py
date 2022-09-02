@@ -99,7 +99,7 @@ class DataCleaner:
     _type_fe2type_be = dict(group='workset', item='workette')
 
     def __init__(
-            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(for_path=True)}'),
+            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(fmt="short-date")}'),
             verbose: bool = True, root_name: str = 'root'
     ):
         self.logger = get_logger(self.__class__.__qualname__)
@@ -133,7 +133,8 @@ class DataCleaner:
             link=entry.get('context.links', None),  # earlier entries don't contain field `links`
             creation_time=entry['j_timestamp'],
             type=self._map_type(entry['context.wtype']),  # UI type of the entry
-            parent_id=entry['field1']  # by API call design
+            parent_id=entry['field1'],  # by API call design
+            is_focus=entry['context.is_MIT']
         ))
 
     @staticmethod
@@ -291,39 +292,36 @@ class DataCleaner:
 if __name__ == '__main__':
     root_nm = '__ROOT__'
 
-    def clean_up():
-        pd.set_option('display.min_rows', 16)
+    # e = 'dev'
+    e = 'prod'
 
-        # e = 'dev'
-        e = 'prod'
+    dnm = 'raw, 2022-08-10_09-57-34'
+    path = os_join(u.dset_path, dnm)
+    dc = DataCleaner(dataset_path=path, verbose=False, root_name=root_nm)
 
-        dnm = 'raw, 2022-08-10_09-57-34'
-        path = os_join(u.dset_path, dnm)
-        dc = DataCleaner(dataset_path=path, verbose=False, root_name=root_nm)
+    def single():
+        dc.verbose = True
+        user_id = dc.user_ids[1]
+        mic(user_id)
+        # date = dc.uid2dt[user_id][-1]
+        date = '2021-05-07'
+        # date = '2021-05-21'
+        # date = '2022-07-25'
+        # date = '2021-09-04'
+        # date = '2022-03-30'
+        # date = '2020-10-07'
+        fnm = os_join(user_id, f'{date}.csv')
+        # sv = False
+        sv = True
+        out = dc.clean_single(data_path=fnm, save=sv)
+        df, meta = out.table, out.meta
+        mic(df, meta)
+    # single()
 
-        def single():
-            dc.verbose = True
-            user_id = dc.user_ids[1]
-            mic(user_id)
-            # date = dc.uid2dt[user_id][-1]
-            date = '2021-05-07'
-            # date = '2021-05-21'
-            # date = '2022-07-25'
-            # date = '2021-09-04'
-            # date = '2022-03-30'
-            # date = '2020-10-07'
-            fnm = os_join(user_id, f'{date}.csv')
-            # sv = False
-            sv = True
-            out = dc.clean_single(data_path=fnm, save=sv)
-            df, meta = out.table, out.meta
-            mic(df, meta)
-        # single()
-
-        def all_():
-            # dc.clean_all(user_id=user_id, save=True)
-            uids = get_user_ids(split=e)
-            for i in uids:
-                dc.clean_all(i, save=True)
-        all_()
-    clean_up()
+    def run():
+        # dc.clean_all(user_id=user_id, save=True)
+        uids = get_user_ids(split=e)
+        for i in uids:
+            lst = dc.clean_all(i, save=True)
+            mic(i, len(lst))
+    run()
