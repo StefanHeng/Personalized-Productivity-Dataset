@@ -99,7 +99,8 @@ class DataCleaner:
     _type_fe2type_be = dict(group='workset', item='workette')
 
     def __init__(
-            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'cleaned, {now(fmt="short-date")}'),
+            self, dataset_path: str,
+            output_path: str = os_join(u.dset_path, f'{now(fmt="short-date")}_Cleaned-Dataset'),
             verbose: bool = True, root_name: str = 'root'
     ):
         self.logger = get_logger(self.__class__.__qualname__)

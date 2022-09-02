@@ -72,7 +72,8 @@ class DataAggregator:
     IGNORE_IS_FOCUS = True
 
     def __init__(
-            self, dataset_path: str, output_path: str = os_join(u.dset_path, f'aggregated, {now(fmt="short-date")}'),
+            self, dataset_path: str,
+            output_path: str = os_join(u.dset_path, f'{now(fmt="short-date")}_Aggregated-Dataset'),
             verbose: bool = False, root_name: str = 'root'
     ):
         self.dataset_path = dataset_path
@@ -380,8 +381,6 @@ class DataAggregator:
 
 
 if __name__ == '__main__':
-    # dnm = 'cleaned, 2022-08-28_23-11-48'
-    # dnm = 'cleaned, 2022-09-01_21-58-41'
     dnm = 'cleaned, 22-09-02'
     path = os_join(u.dset_path, dnm)
     da = DataAggregator(dataset_path=path, root_name='__ROOT__')
