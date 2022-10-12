@@ -19,6 +19,7 @@ setup(
     install_requires=[
         'pandas',
         'tqdm',
+        'beautifulsoup4',
         'stefutils'
     ],
     keywords=['python', 'nlp', 'deep-learning', 'text-classification', 'dataset'],
