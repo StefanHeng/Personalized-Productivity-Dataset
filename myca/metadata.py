@@ -120,8 +120,9 @@ def get_aggregated_stats(
                 labels=pl.nc(uniq_labels)
             ),
             collection={
-                'uniq-labels': uniq_labels,  # list of unique labels across all entries, ordered by frequency
-                'level2uniq-labels': level2uniq_labels  # list of unique labels for each level, ordered by frequency
+                'uniq-labels': pl.nc(uniq_labels),  # list of unique labels across all entries, ordered by frequency
+                # list of unique labels for each level, ordered by frequency
+                'level2uniq-labels': {k: pl.nc(v) for k, v in level2uniq_labels.items()}
             }
         )
     rows, meta = [], dict()
@@ -159,7 +160,7 @@ if __name__ == '__main__':
     def check_raw():
         dset = load_cleand_dset()
         get_raw_stats(dataset=dset)
-    check_raw()
+    # check_raw()
 
     def check_aggregated():
         dnm = '22-09-02_Aggregated-Dataset'
@@ -171,4 +172,4 @@ if __name__ == '__main__':
 
         sv = True
         mic(get_aggregated_stats(d, save=sv))
-    # check_aggregated()
+    check_aggregated()

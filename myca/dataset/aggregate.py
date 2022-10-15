@@ -150,10 +150,10 @@ class DataAggregator:
             if strict:
                 assert not (df.duplicated(subset=dedup_columns, keep=False)).any()  # sanity check
             if focus_column:
-                e_str = f'{logi(focus_column)} entries'
+                e_str = f'{pl.i(focus_column)} entries'
             else:
                 e_str = 'entries'
-            self.logger.info(f'{logi(n_dup)} duplicate {e_str} reduced to {logi(n_dup - len(idxs_rmv))}')
+            self.logger.info(f'{pl.i(n_dup)} duplicate {e_str} reduced to {pl.i(n_dup - len(idxs_rmv))}')
         return df
 
     def _dedup_label_change(self, df: pd.DataFrame, key: Dict[str, Any], grp_idxs: List[int]) -> List[int]:
@@ -163,7 +163,7 @@ class DataAggregator:
 
         if self.verbose:
             labels = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-            self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("labels", c="m")} {logi(labels)}')
+            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("labels", c="m")} {pl.i(labels)}')
         grp_idxs.remove(idx_keep)
         return grp_idxs
 
@@ -175,7 +175,7 @@ class DataAggregator:
             # mic(grp_idxs, df.iloc[grp_idxs]['is_focus'])
             # exit(1)
             is_focus = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-            self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("is_focus", c="m")} {logi(is_focus)}')
+            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("is_focus", c="m")} {pl.i(is_focus)}')
         grp_idxs.remove(idx_keep)
         return grp_idxs
 
@@ -212,7 +212,7 @@ class DataAggregator:
 
             if self.verbose:
                 links = links.values.tolist()
-                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("links", c="m")} {logi(links)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("links", c="m")} {pl.i(links)}')
             return grp_idxs
         else:  # some or all `links` field is meaningful
             if flags.any():
@@ -228,7 +228,7 @@ class DataAggregator:
 
             if self.verbose:
                 types = types.values.tolist()
-                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("types", c="m")} {logi(types)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("types", c="m")} {pl.i(types)}')
             return grp_idxs
         else:  # some or all `types` field is special
             flags = types.map(lambda t: t is None)
@@ -252,7 +252,7 @@ class DataAggregator:
 
             if self.verbose:
                 notes = notes.values.tolist()
-                self.logger.info(f'Duplicate key {logi(key)} resolved with {log_s("notes", c="m")} {logi(notes)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("notes", c="m")} {pl.i(notes)}')
             return grp_idxs
         else:  # some `notes` field is meaningful
             # TODO: deal with multiple meaningful notes
@@ -265,7 +265,7 @@ class DataAggregator:
         date2entries: Dict[str, List[ActionEntry]] = defaultdict(list)
         date2creation_time: Dict[str, List[str]] = defaultdict(list)
 
-        it = tqdm(paths, desc=f'Merging entries for user {logi(user_id)}', unit='date')
+        it = tqdm(paths, desc=f'Merging entries for user {pl.i(user_id)}', unit='date')
         for p in it:
             date = stem(p)
             df = pd.read_csv(p)
@@ -274,7 +274,7 @@ class DataAggregator:
                     added_entries.add(e)
                     date2entries[date].append(e)
                     date2creation_time[date].append(t)
-            it.set_postfix(dict(n=logi(len(added_entries)), added=logi(len(date2entries[date]))))
+            it.set_postfix(dict(n=pl.i(len(added_entries)), added=pl.i(len(date2entries[date]))))
             # if date == '2020-10-20':  # TODO: debugging
             #     break
         # include the date since the `creation_time` field is influenced by time zone,
@@ -368,7 +368,7 @@ class DataAggregator:
             k: dict(hierarchy=h, tree=readable_tree(h, root=self.root_name)) for k, h in dates2hierarchy.items()
         }
         d_log = {'#entry': len(df), '#hiearchy': len(dates2hierarchy)}
-        self.logger.info(f'Aggregation for user {logi(user_id)} completed with {logi(d_log)}')
+        self.logger.info(f'Aggregation for user {pl.i(user_id)} completed with {pl.i(d_log)}')
 
         if save:
             df.to_csv(os_join(self.output_path, f'{user_id}.csv'), index=False)

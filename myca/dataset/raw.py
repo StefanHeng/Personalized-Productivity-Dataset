@@ -56,7 +56,7 @@ class ApiCaller:
             with open(token_path, 'w') as f:
                 json.dump(res, f, indent=4)
             if self.verbose:
-                self.logger.info(f'Admin token saved to {logi(token_path)}')
+                self.logger.info(f'Admin token saved to {pl.i(token_path)}')
 
     def __call__(self, user_id: str, before_date: str, token_fnm: str = None) -> List[Tuple[str, Dict]]:
         token_path = os_join(ApiCaller.auth_path, f'{token_fnm or self.token_fnm}.json')
@@ -77,7 +77,7 @@ class ApiCaller:
         )
         args = dict(url=self.call_url, headers=headers, data=json.dumps(payload))
         if self.verbose:
-            self.logger.info(f'Making fetch dataset call with {logi(args)}... ')
+            self.logger.info(f'Making fetch dataset call with {pl.i(args)}... ')
 
         res = None
         while not res or res.status_code != 200:  # Retry if code is 503
@@ -85,16 +85,16 @@ class ApiCaller:
             res = requests.post(**args)
             t = fmt_delta(datetime.datetime.now() - t_strt)
             if self.verbose:
-                self.logger.info(f'Got response in {logi(t)} with status {logi(res.status_code)}')
+                self.logger.info(f'Got response in {pl.i(t)} with status {pl.i(res.status_code)}')
         if res.status_code == 200:
             res = json.loads(res.text)
         else:
-            raise ValueError(f'API call failed with {logi(res)}')
+            raise ValueError(f'API call failed with {pl.i(res)}')
         if res['success']:
             return res['report']
         else:
             print(res['stack_trace'])
-            raise ValueError(f'API call failed with {logi(res)}')
+            raise ValueError(f'API call failed with {pl.i(res)}')
 
 
 @dataclass
@@ -158,7 +158,7 @@ class DataWriter:
 
     def get_all(self, user_id: str, start_date: str, end_date: str, save: bool = False) -> Dict[str, WriteOutput]:
         d_log = dict(user_id=user_id, start_date=start_date, end_date=end_date)
-        self.logger.info(f'Getting raw dataset with {logi(d_log)}... ')
+        self.logger.info(f'Getting raw dataset with {pl.i(d_log)}... ')
         dates = pd.date_range(start=start_date, end=end_date, freq='D')
         dt2df: Dict[str, WriteOutput] = dict()
         it = tqdm(dates, desc='Processing', unit='date')

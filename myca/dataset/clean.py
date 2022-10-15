@@ -37,7 +37,7 @@ class Id2Text:
 
         if (df.text == self.root_name).any():
             # Resolve, otherwise readable graph representation will be incorrect, cos root node info will be overridden
-            raise ValueError(f'Root node name {logi(self.root_name)} found in {logi("text")} column')
+            raise ValueError(f'Root node name {pl.i(self.root_name)} found in {pl.i("text")} column')
         self.root_id = df.loc[0, 'id']
 
     def __call__(self, id_: str) -> str:
@@ -121,7 +121,7 @@ class DataCleaner:
     def _map_type(self, t: str) -> str:
         if t in DataCleaner._type_fe2type_be:
             t_ = DataCleaner._type_fe2type_be[t]
-            self.logger.warning(f'Front End name {logi(t)} appeared, converted to {logi(t_)}')
+            self.logger.warning(f'Front End name {pl.i(t)} appeared, converted to {pl.i(t_)}')
             return t_
         else:
             return t
@@ -164,7 +164,7 @@ class DataCleaner:
                     added = True
                     break
             if not added:  # should not happen, assuming API returns in correct order
-                raise ValueError(f'Parent for node with {logi(row.to_dict())} not found')
+                raise ValueError(f'Parent for node with {pl.i(row.to_dict())} not found')
         return graph
 
     def clean_df(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, AdjList]:
@@ -190,7 +190,7 @@ class DataCleaner:
                 idxs = sorted(df.index[df.id == d].to_list())
                 parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
-                self.logger.info(f'Duplicate id found with {logi(d_log)}')
+                self.logger.info(f'Duplicate id found with {pl.i(d_log)}')
                 row0 = df.loc[idxs[0]].drop(labels='parent_id')
                 assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
                 df = df.drop(idxs[:-1])  # Only keep the bottom-most row, which is the last modified one
@@ -219,10 +219,10 @@ class DataCleaner:
         """
         path = os_join(self.dataset_path, data_path)
         if self.verbose:
-            self.logger.info(f'Cleaning {logi(path)}... ')
+            self.logger.info(f'Cleaning {pl.i(path)}... ')
         df = pd.read_csv(path)
         if len(df) == 1:
-            self.logger.info(f'No action entries found with {logi(data_path)}')
+            self.logger.info(f'No action entries found with {pl.i(data_path)}')
         else:
             df, graph = self.clean_df(df)
 
@@ -281,10 +281,10 @@ class DataCleaner:
         Clean up raw dataset for a single user
         """
         dates = self.uid2dt[user_id]
-        it = tqdm(dates, desc=f'Cleaning up raw dataset for user {logi(user_id)}', unit='date')
+        it = tqdm(dates, desc=f'Cleaning up raw dataset for user {pl.i(user_id)}', unit='date')
         ret = []
         for d in it:
-            it.set_postfix(date=logi(d))
+            it.set_postfix(date=pl.i(d))
             fnm = os_join(user_id, f'{d}.csv')
             ret.append(self.clean_single(fnm, save))
         return ret
