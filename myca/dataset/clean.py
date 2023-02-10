@@ -20,7 +20,10 @@ from myca.util import *
 from myca.dataset.util import *
 
 
-__all__ = ['Id2Text', 'readable_tree', 'DataCleaner']
+__all__ = ['ROOT_HIERARCHY_NAME', 'Id2Text', 'readable_tree', 'DataCleaner']
+
+
+ROOT_HIERARCHY_NAME = '__ROOT__'
 
 
 @dataclass
@@ -291,14 +294,11 @@ class DataCleaner:
 
 
 if __name__ == '__main__':
-    root_nm = '__ROOT__'
-
     # e = 'dev'
     e = 'prod'
 
     dnm = 'raw, 2022-08-10_09-57-34'
-    path = os_join(u.dset_path, dnm)
-    dc = DataCleaner(dataset_path=path, verbose=False, root_name=root_nm)
+    dc = DataCleaner(dataset_path=os_join(u.dset_path, dnm), verbose=False, root_name=ROOT_HIERARCHY_NAME)
 
     def single():
         dc.verbose = True

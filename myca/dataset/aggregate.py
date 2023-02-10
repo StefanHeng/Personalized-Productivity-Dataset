@@ -106,7 +106,7 @@ class DataAggregator:
 
     def _get_hierarchy(self, user_id: str, date: str) -> AdjList:
         """
-        :return: adjacency list, i.e. parent -> children
+        :return: Adjacency list for all categorical nodes, i.e. ignoring children
 
         If the structure without all leaf nodes are the same for 2 consecutive days, consider no change in hierarchy
         """
@@ -163,7 +163,7 @@ class DataAggregator:
 
         if self.verbose:
             labels = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("labels", c="m")} {pl.i(labels)}')
+            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {pl.s("labels", c="m")} {pl.i(labels)}')
         grp_idxs.remove(idx_keep)
         return grp_idxs
 
@@ -175,7 +175,7 @@ class DataAggregator:
             # mic(grp_idxs, df.iloc[grp_idxs]['is_focus'])
             # exit(1)
             is_focus = [(None if lb is None else json.loads(lb)) for lb in df.iloc[grp_idxs]['labels']]
-            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("is_focus", c="m")} {pl.i(is_focus)}')
+            self.logger.info(f'Duplicate key {pl.i(key)} resolved with {pl.s("is_focus", c="m")} {pl.i(is_focus)}')
         grp_idxs.remove(idx_keep)
         return grp_idxs
 
@@ -212,7 +212,7 @@ class DataAggregator:
 
             if self.verbose:
                 links = links.values.tolist()
-                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("links", c="m")} {pl.i(links)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {pl.s("links", c="m")} {pl.i(links)}')
             return grp_idxs
         else:  # some or all `links` field is meaningful
             if flags.any():
@@ -228,7 +228,7 @@ class DataAggregator:
 
             if self.verbose:
                 types = types.values.tolist()
-                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("types", c="m")} {pl.i(types)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {pl.s("types", c="m")} {pl.i(types)}')
             return grp_idxs
         else:  # some or all `types` field is special
             flags = types.map(lambda t: t is None)
@@ -252,7 +252,7 @@ class DataAggregator:
 
             if self.verbose:
                 notes = notes.values.tolist()
-                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {log_s("notes", c="m")} {pl.i(notes)}')
+                self.logger.info(f'Duplicate key {pl.i(key)} resolved with {pl.s("notes", c="m")} {pl.i(notes)}')
             return grp_idxs
         else:  # some `notes` field is meaningful
             # TODO: deal with multiple meaningful notes
@@ -261,7 +261,7 @@ class DataAggregator:
     def aggregate_single(self, user_id: str, save: bool = False) -> Tuple[pd.DataFrame, Dict]:
         paths = self.uid2dt[user_id]
         added_entries = set()
-        # `creation_time` stored outside of `ActionEntry` so that hashing works
+        # `creation_time` stored outside `ActionEntry` so that hashing works
         date2entries: Dict[str, List[ActionEntry]] = defaultdict(list)
         date2creation_time: Dict[str, List[str]] = defaultdict(list)
 
@@ -381,9 +381,11 @@ class DataAggregator:
 
 
 if __name__ == '__main__':
+    from myca.dataset.clean import ROOT_HIERARCHY_NAME
+
     dnm = 'cleaned, 22-09-02'
     path = os_join(u.dset_path, dnm)
-    da = DataAggregator(dataset_path=path, root_name='__ROOT__')
+    da = DataAggregator(dataset_path=path, root_name=ROOT_HIERARCHY_NAME)
 
     def check_single():
         da.verbose = True

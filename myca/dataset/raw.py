@@ -225,6 +225,7 @@ if __name__ == '__main__':
             st = '2020-10-01'
             # st = '2021-01-01'
             # st = '2021-10-28'
+            ed = '2022-10-01'
             for i in uids:
-                dw.get_all(user_id=i, start_date=st, end_date='2022-08-01', save=True)
-    # write_all()
+                dw.get_all(user_id=i, start_date=st, end_date=ed, save=True)
+    write_all()
