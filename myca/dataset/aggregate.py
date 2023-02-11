@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from stefutil import *
 from myca.util import *
 from myca.dataset.util import *
-from myca.dataset.clean import readable_tree
+from myca.dataset.clean import readable_tree, path2root
 
 
 __all__ = ['AggregateOutput', 'DataAggregator']
@@ -48,9 +48,23 @@ class ActionEntry:
 
 
 @dataclass
+class Hierarchy:
+    graph: AdjList = None  # adjacency list
+    idx2name: Dict[int, str] = None  # Mapping from index to category name
+    root_index: int = None
+
+    def json_readable(self) -> Dict[str, Any]:
+        return {
+            'hierarchy_graph': self.graph,
+            'vocabulary': self.idx2name,
+            'readable': readable_tree(self.graph, root=self.root_index, elm_map=lambda i: self.idx2name[i])
+        }
+
+
+@dataclass
 class DatesHierarchyPair:
     dates: List[str] = None
-    hierarchy: AdjList = None  # adjacency list
+    hierarchy: Hierarchy = None
 
 
 @dataclass
@@ -104,21 +118,32 @@ class DataAggregator:
             ), row.creation_time
         ) for _, row in df.iterrows()]
 
-    def _get_hierarchy(self, user_id: str, date: str) -> AdjList:
+    def _get_hierarchy(self, user_id: str, date: str) -> Hierarchy:
         """
         :return: Adjacency list for all categorical nodes, i.e. ignoring children
 
         If the structure without all leaf nodes are the same for 2 consecutive days, consider no change in hierarchy
         """
         with open(os_join(self.dataset_path, user_id, f'{date}.json'), 'r') as f:
-            meta = json.load(f)
-        graph = get(meta, 'graph.name')
+            meta = json.load(f)['graph']
+        # the `name` version of `graph` may be inaccurate, see `DataCleaner.clean_single`
+        graph, id2idx, id2nm = meta['index'], meta['index_vocabulary'], meta['id_vocabulary']
+        graph = {int(k): v for k, v in graph.items()}  # since json only supports string keys
+        idx2id = {v: k for k, v in id2idx.items()}  # Should be 1-to-1 mapping by construction
         # remove leaf nodes
-        ret = {node: children for node, children in graph.items() if children and len(children) > 0}
-        leafs = set(graph.keys()) - set(ret.keys())
+        sub_g = {node: children for node, children in graph.items() if children and len(children) > 0}
+        leafs = set(graph.keys()) - set(sub_g.keys())
         # remove edges to leave nodes
-        ret = {node: [c for c in children if c not in leafs] for node, children in ret.items()}
-        return ret
+        sub_g = {node: [c for c in children if c not in leafs] for node, children in sub_g.items()}
+
+        # sanity check categories still make a complete tree
+        root_id = [i for i, nm in id2nm.items() if nm == ROOT_HIERARCHY_NAME]
+        assert len(root_id) == 1  # sanity check one root
+        root_idx = id2idx[root_id[0]]
+
+        for n in sub_g:
+            assert path2root(graph=sub_g, root=root_idx, target=n) is not None
+        return Hierarchy(graph=sub_g, idx2name={idx: id2nm[idx2id[idx]] for idx in sub_g.keys()}, root_index=root_idx)
 
     def _dedup_wrapper(
             self, df: pd.DataFrame, dedup_columns: List[str] = None,
@@ -345,29 +370,32 @@ class DataAggregator:
 
         # compress hierarchy into necessary changes
         # since date in `Y-m-d`, temporal order maintained
+        # # TODO: debugging
+        # if user_id != '6b8d24df-b846-4d17-928c-98e3d6306589':
+        #     return
+        # mic(self._get_hierarchy(user_id, '2022-01-08'))
+        # raise NotImplementedError
         date2hierarchy = {date: self._get_hierarchy(user_id, date) for date in sorted(date2entries.keys())}
         dates = iter(sorted(date2entries.keys()))
         d = next(dates, None)
         assert d is not None
-        dates2hierarchy: List[DatesHierarchyPair] = [DatesHierarchyPair(dates=[d], hierarchy=date2hierarchy[d])]
+        dates2hier: List[DatesHierarchyPair] = [DatesHierarchyPair(dates=[d], hierarchy=date2hierarchy[d])]
         curr_dates = [d]
         d = next(dates, None)
         while d is not None:
-            last_pair = dates2hierarchy[-1]
+            last_pair = dates2hier[-1]
             hier_curr = date2hierarchy[d]
             if hier_curr == last_pair.hierarchy:  # same hierarchy compared to last added date
                 curr_dates.append(d)
-                dates2hierarchy[-1].dates = curr_dates
+                dates2hier[-1].dates = curr_dates
             else:
-                dates2hierarchy.append(DatesHierarchyPair(dates=[d], hierarchy=hier_curr))
+                dates2hier.append(DatesHierarchyPair(dates=[d], hierarchy=hier_curr))
                 curr_dates = [d]
             d = next(dates, None)
-        dates2hierarchy: Dict = {tuple(p.dates): p.hierarchy for p in dates2hierarchy}
+        dates2hier: Dict[Tuple, Hierarchy] = {tuple(pr.dates): pr.hierarchy for pr in dates2hier}
         # root node name, see `clean.Id2Text`
-        dates2meta = {
-            k: dict(hierarchy=h, tree=readable_tree(h, root=self.root_name)) for k, h in dates2hierarchy.items()
-        }
-        d_log = {'#entry': len(df), '#hiearchy': len(dates2hierarchy)}
+        dates2meta = {k: h.json_readable() for k, h in dates2hier.items()}
+        d_log = {'#entry': len(df), '#hiearchy': len(dates2hier)}
         self.logger.info(f'Aggregation for user {pl.i(user_id)} completed with {pl.i(d_log)}')
 
         if save:
@@ -383,8 +411,8 @@ class DataAggregator:
 if __name__ == '__main__':
     from myca.dataset.clean import ROOT_HIERARCHY_NAME
 
-    dnm = 'cleaned, 22-09-02'
-    path = os_join(u.dset_path, dnm)
+    dnm = '23-02-10_Cleaned-Dataset'
+    path = os_join(u.dataset_path, dnm)
     da = DataAggregator(dataset_path=path, root_name=ROOT_HIERARCHY_NAME)
 
     def check_single():

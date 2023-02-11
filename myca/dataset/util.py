@@ -2,14 +2,15 @@ import os
 import json
 import math
 import datetime
-from typing import List, Dict
+from typing import List, Dict, Any, TypeVar
 
 from myca.util import *
 
-__all__ = ['AdjList', 'is_nan', 'str_time2time', 'get_user_ids']
+__all__ = ['T', 'AdjList', 'is_nan', 'str_time2time', 'get_user_ids']
 
 
-AdjList = Dict[str, List[str]]
+T = TypeVar('T')
+AdjList = Dict[T, List[T]]
 
 
 def is_nan(x) -> bool:

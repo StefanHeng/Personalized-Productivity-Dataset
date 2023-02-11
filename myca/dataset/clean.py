@@ -9,7 +9,7 @@ import os
 import json
 import glob
 from os.path import join as os_join
-from typing import List, Tuple, Dict, Any, Union, Optional
+from typing import List, Tuple, Dict, Any, Union, Optional, Callable
 from dataclasses import dataclass
 
 import pandas as pd
@@ -20,7 +20,7 @@ from myca.util import *
 from myca.dataset.util import *
 
 
-__all__ = ['ROOT_HIERARCHY_NAME', 'Id2Text', 'readable_tree', 'DataCleaner']
+__all__ = ['ROOT_HIERARCHY_NAME', 'Id2Text', 'path2root', 'readable_tree', 'DataCleaner']
 
 
 ROOT_HIERARCHY_NAME = '__ROOT__'
@@ -53,6 +53,10 @@ class Id2Text:
             txt = txts[0]
             return '' if is_nan(txt) else txt
 
+    @property
+    def vocab(self) -> Dict[str, str]:
+        return {id_: self.__call__(id_) for id_ in self.df.id}
+
 
 def _path2root(graph: Dict, start, target, curr_path: List) -> List:
     children = graph[start]
@@ -71,10 +75,16 @@ def _path2root(graph: Dict, start, target, curr_path: List) -> List:
 
 
 def path2root(graph: Dict, root, target) -> List:
-    return _path2root(graph, root, target, [root])  # inclusive start & end
+    if root == target:
+        return [root]
+    else:
+        return _path2root(graph, root, target, [root])  # inclusive start & end
 
 
-def readable_tree(graph: Dict[str, List[str]], root: str = 'root', parent_prefix: str = None) -> Union[str, Tuple[str, List[Any]]]:
+def readable_tree(
+        graph: AdjList, root: T = 'root', parent_prefix: str = None,
+        elm_map: Callable[[T], Any] = None
+) -> Union[Any, Tuple[Any, List[Any]]]:
     """
     :param graph: Adjacency list of a graph/tree
     :param root: Root node
@@ -82,15 +92,35 @@ def readable_tree(graph: Dict[str, List[str]], root: str = 'root', parent_prefix
         Counter example: 2 nodes, A, B are neighbors of each other, A is leaf node, B is inner node
         But they would appear as if A has a single child B
         This is because Tuple is rendered as List in json
+    :param elm_map: Map each element in the graph to something else, e.g. index to text
     :return: nested binary tuples of (name, children)
     """
     children = graph[root]
     is_leaf = (not children) or len(children) == 0
     if is_leaf:
+        if elm_map:
+            root = elm_map(root)
         return root
     else:
         p = f'{parent_prefix}_{root}' if parent_prefix else root
-        return p, [readable_tree(graph, c, parent_prefix=parent_prefix) for c in children]
+        if elm_map:
+            p = elm_map(p)
+        return p, [readable_tree(graph, root=c, parent_prefix=parent_prefix, elm_map=elm_map) for c in children]
+
+
+class Element2Index:
+    """
+    Assign indices to elements, index increases as items are added to vocabulary
+    """
+    def __init__(self):
+        self.vocab: Dict[str, int] = dict()
+        self.idx = 0
+
+    def __call__(self, element: str) -> int:
+        if element not in self.vocab:
+            self.vocab[element] = self.idx
+            self.idx += 1
+        return self.vocab[element]
 
 
 class DataCleaner:
@@ -193,7 +223,7 @@ class DataCleaner:
                 idxs = sorted(df.index[df.id == d].to_list())
                 parent_nms = [i2t(df.loc[idx, 'parent_id']) for idx in idxs]
                 d_log = dict(id=d, text=i2t(d), indices=idxs, parent_names=parent_nms)
-                self.logger.info(f'Duplicate id found with {pl.i(d_log)}')
+                self.logger.info(f'Duplicate id found with {pl.i(d_log)}, assumes entry is moved among the hierarchy')
                 row0 = df.loc[idxs[0]].drop(labels='parent_id')
                 assert all(df.loc[i].drop(labels='parent_id').equals(row0) for i in idxs[1:])
                 df = df.drop(idxs[:-1])  # Only keep the bottom-most row, which is the last modified one
@@ -229,13 +259,28 @@ class DataCleaner:
         else:
             df, graph = self.clean_df(df)
 
-            i2t = Id2Text(df, root_name=self.root_name)
+            i2t = Id2Text(df, root_name=self.root_name)  # Not necessarily one-to-one mapping
             root_id = i2t.root_id
+            e2i = Element2Index()  # Definitely one-to-one mapping
 
             graph_txt = {i2t(k): ([i2t(i) for i in v] if v is not None else v) for k, v in graph.items()}
+            graph_idx = {e2i(k): ([e2i(i) for i in v] if v is not None else v) for k, v in graph.items()}
+
+            # sanity check forms a valid tree
+            for n in graph.keys():
+                assert path2root(graph=graph, root=root_id, target=n) is not None
+            rood_idx = e2i(root_id)
+            for n in graph_idx.keys():
+                assert path2root(graph=graph_idx, root=rood_idx, target=n) is not None
+
             path = {n: path2root(graph, root_id, n) for n in graph}  # node => path from root to node
             meta = dict(
-                graph=dict(id=graph, name=graph_txt),
+                # !! Note that `name` version of `graph` may not be accurate if multiple categories share the same name
+                # For an intermediate representation on readability & precision, use the `index` version
+                graph=dict(
+                    id=graph, id_vocabulary=i2t.vocab, name=graph_txt,
+                    index=graph_idx, index_vocabulary=e2i.vocab
+                ),
                 path=dict(id=path, name={i2t(k): ([i2t(i) for i in v] if v else v) for k, v in path.items()}),
                 # a human-readable snapshot
                 tree=dict(
@@ -294,11 +339,11 @@ class DataCleaner:
 
 
 if __name__ == '__main__':
-    # e = 'dev'
-    e = 'prod'
+    # env_ = 'dev'
+    env_ = 'prod'
 
     dnm = 'raw, 2022-08-10_09-57-34'
-    dc = DataCleaner(dataset_path=os_join(u.dset_path, dnm), verbose=False, root_name=ROOT_HIERARCHY_NAME)
+    dc = DataCleaner(dataset_path=os_join(u.dataset_path, dnm), verbose=False, root_name=ROOT_HIERARCHY_NAME)
 
     def single():
         dc.verbose = True
@@ -321,7 +366,7 @@ if __name__ == '__main__':
 
     def run():
         # dc.clean_all(user_id=user_id, save=True)
-        uids = get_user_ids(split=e)
+        uids = get_user_ids(split=env_)
         for i in uids:
             lst = dc.clean_all(i, save=True)
             mic(i, len(lst))

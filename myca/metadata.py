@@ -29,8 +29,8 @@ def to_tokens(x: Union[str, float]) -> List[str]:
 
 def _save(df: pd.DataFrame = None, meta: Dict = None, name: str = None):
     date = now(fmt="short-date")
-    df.to_csv(os_join(u.dset_path, f'{date}_{name}.csv'), index=False)
-    with open(os_join(u.dset_path, f'{date}_{name}, meta.json'), 'w') as f:
+    df.to_csv(os_join(u.dataset_path, f'{date}_{name}.csv'), index=False)
+    with open(os_join(u.dataset_path, f'{date}_{name}, meta.json'), 'w') as f:
         json.dump(meta, f, indent=4)
     return df
 
@@ -140,7 +140,7 @@ if __name__ == '__main__':
     from tqdm.auto import tqdm
 
     def load_cleand_dset(dataset_name: str = '22-09-02_Cleaned-Dataset'):
-        path = os_join(u.dset_path, dataset_name)
+        path = os_join(u.dataset_path, dataset_name)
         user_ids = [stem(f) for f in sorted(glob.iglob(os_join(path, '*')))]
         uid2paths: Dict[str, List[str]] = {
             uid: [p for p in sorted(glob.glob(os_join(path, uid, '*.csv')))]
@@ -164,7 +164,7 @@ if __name__ == '__main__':
 
     def check_aggregated():
         dnm = '22-09-02_Aggregated-Dataset'
-        path = os_join(u.dset_path, dnm)
+        path = os_join(u.dataset_path, dnm)
 
         paths = [f for f in sorted(glob.iglob(os_join(path, '*.csv')))]
         d = {stem(p): pd.read_csv(p) for p in paths}
