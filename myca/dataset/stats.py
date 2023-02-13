@@ -4,8 +4,9 @@ Visualize the dataset statistics
 
 import json
 import glob
+import statistics as stats
 from os.path import join as os_join
-from typing import List, Tuple, Union
+from typing import List, Tuple, Dict, Union
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ class MycaVisualizer:
 
         self.dataset_path = dataset_path
         self.user_ids = [stem(f) for f in sorted(glob.iglob(os_join(self.dataset_path, '*.csv')))]
+        mic(self.user_ids)
 
         def load_hier(uid: str):
             path_hier = os_join(self.dataset_path, f'{uid}.json')
@@ -61,9 +63,8 @@ class MycaVisualizer:
         is_all_level = levels == 'all'
         if not is_all_level:  # sanity check
             assert isinstance(levels, int)
-        # TODO: show max, min range
 
-        def uid2n_label(uid: str) -> List:
+        def uid2n_label(uid: str) -> List[Dict[str, float]]:
             # Get Unique #label for the given time interval, ordered by time
             ret = [[] for _ in self.itv_edges]  # map to time interval by index
             for dates, d in self.hierarchies[uid].items():
@@ -80,16 +81,12 @@ class MycaVisualizer:
                     if levels == 0:  # root labels
                         n_lb = len(hier[root_idx])
                     else:
-                        # # TODO: debugging
-                        # for lb in hier.keys():
-                        #     if path2root(graph=hier, root=root_idx, target=lb) is None:
-                        #         mic(hier, lb, dates, uid)
-                        #         raise NotImplementedError
-                        # root is 0 depth
-                        lb2depth = {lb: len(path2root(graph=hier, root=root_idx, target=lb)) - 1 for lb in hier.keys()}
+                        # root is arbitrary, root-level children, should be 0 depth, not 1 in most trees/graphs
+                        lb2depth = {lb: len(path2root(graph=hier, root=root_idx, target=lb)) - 2 for lb in hier.keys()}
                         n_lb = len([lb for lb, p_len in lb2depth.items() if p_len == levels])
-                        mic(lb2depth, n_lb, levels)
-                        raise NotImplementedError
+                        # if uid == 'dcd924b1-8e9a-4f32-9edf-310626552878':
+                        #     mic(lb2depth, n_lb, levels)
+                        #     raise NotImplementedError
 
                 d_st, d_ed = dates[0], dates[-1]
 
@@ -98,26 +95,33 @@ class MycaVisualizer:
                     if pd.Timestamp(d_st) < e_e and pd.Timestamp(d_ed) >= e_s:
                         ret[i_].append(n_lb)
 
-            # TODO: for now, reduce to the mean value
-            return [np.mean(n) for n in ret]
+            return [dict(mu=np.mean(n), sig=stats.stdev(n), mi=min(n), ma=max(n)) for n in ret]
 
-        fig = plt.figure()
+        plt.figure()
         ax = plt.gca()
+        x_bounds = self._get_interval_boundaries()
         for i, uid_ in enumerate(self.user_ids):
-            lst = uid2n_label(uid_)
-            mic(lst)
+            df = pd.DataFrame(uid2n_label(uid_))
 
             u_lb = f'User-{i+1}-{uid_[:4]}'
-            args = LN_KWARGS | dict(ms=2, c=self.plt_colors[i])
-            plt.plot(self._interval_2_plot_centers(), lst, label=u_lb, **args)
+            c = self.plt_colors[i]
+            args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
+            plt.plot(self._interval_2_plot_centers(), df.mu, label=u_lb, **args)
+            assert len(df.sig) + 1 == len(x_bounds)
+            for j, row in df.iterrows():
+                j: int
+                # 1std range as box, min and max as horizontal lines
+                plt.fill_between(x_bounds[j:j+2], row.mu - row.sig, row.mu + row.sig, facecolor=c, alpha=0.1)
+                args.update(dict(marker=None, lw=0.3))
+                plt.plot(x_bounds[j:j+2], [row.mi, row.mi], alpha=0.5, **args)
+                plt.plot(x_bounds[j:j+2], [row.ma, row.ma], alpha=0.5, **args)
 
         mi, ma = ax.get_ylim()
         ax.set_ylim([0, ma])  # y-axis starts from 0
 
         args = dict(lw=0.4, color=self.plt_colors[-1], alpha=0.5)
-        x_bounds = self._get_interval_boundaries()
         plt.vlines(x=x_bounds, ymin=0, ymax=ma, label='Time Interval Boundaries', **args)
-        # ax.set_xlim([x_bounds[0], x_bounds[-1]])  # Not intuitive
+        ax.set_xlim([x_bounds[0], x_bounds[-1]])
 
         if levels == 'all':
             lvl_desc = 'All Levels'
@@ -141,10 +145,9 @@ if __name__ == '__main__':
 
     dnm = '23-02-10_Aggregated-Dataset'
     mv = MycaVisualizer(dataset_path=os_join(u.dset_path, dnm))
-    # mv.n_label(levels='all')
+    mv.n_label(levels='all')
     # mv.n_label(levels=0)
-    mv.n_label(levels=1)
+    # mv.n_label(levels=1)
     # mv.n_label(levels=2)
     # mv.n_label(levels=3)
-    # mv.n_label(levels=4)
-
+    # mv.n_label(levels=4)  # The deepest level

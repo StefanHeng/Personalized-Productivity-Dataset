@@ -370,11 +370,6 @@ class DataAggregator:
 
         # compress hierarchy into necessary changes
         # since date in `Y-m-d`, temporal order maintained
-        # # TODO: debugging
-        # if user_id != '6b8d24df-b846-4d17-928c-98e3d6306589':
-        #     return
-        # mic(self._get_hierarchy(user_id, '2022-01-08'))
-        # raise NotImplementedError
         date2hierarchy = {date: self._get_hierarchy(user_id, date) for date in sorted(date2entries.keys())}
         dates = iter(sorted(date2entries.keys()))
         d = next(dates, None)
