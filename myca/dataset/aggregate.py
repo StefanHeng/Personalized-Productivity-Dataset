@@ -118,14 +118,14 @@ class DataAggregator:
             ), row.creation_time
         ) for _, row in df.iterrows()]
 
-    def _get_hierarchy(self, user_id: str, date: str) -> Hierarchy:
+    @staticmethod
+    def _get_hierarchy(meta: Dict[str, Any]) -> Hierarchy:
         """
+        :param meta: `graph` field of the cleaned version, for a given user on a given date
         :return: Adjacency list for all categorical nodes, i.e. ignoring children
 
         If the structure without all leaf nodes are the same for 2 consecutive days, consider no change in hierarchy
         """
-        with open(os_join(self.dataset_path, user_id, f'{date}.json'), 'r') as f:
-            meta = json.load(f)['graph']
         # the `name` version of `graph` may be inaccurate, see `DataCleaner.clean_single`
         graph, id2idx, id2nm = meta['index'], meta['index_vocabulary'], meta['id_vocabulary']
         graph = {int(k): v for k, v in graph.items()}  # since json only supports string keys
@@ -370,7 +370,11 @@ class DataAggregator:
 
         # compress hierarchy into necessary changes
         # since date in `Y-m-d`, temporal order maintained
-        date2hierarchy = {date: self._get_hierarchy(user_id, date) for date in sorted(date2entries.keys())}
+
+        def date2meta(date_: str):
+            with open(os_join(self.dataset_path, user_id, f'{date_}.json'), 'r') as fl:
+                return json.load(fl)['graph']
+        date2hierarchy = {dt: DataAggregator._get_hierarchy(meta=date2meta(dt)) for dt in sorted(date2entries.keys())}
         dates = iter(sorted(date2entries.keys()))
         d = next(dates, None)
         assert d is not None
