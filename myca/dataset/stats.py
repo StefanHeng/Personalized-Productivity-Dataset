@@ -103,7 +103,7 @@ class MycaVisualizer:
                         ret[i_].append(n_lb)
             return [dict(mu=np.mean(n), sig=stats.stdev(n), mi=min(n), ma=max(n)) for n in ret]
 
-    def _uid2root_cat_dist_meta(self, uid: str) -> Tuple[List[Dict[str, float]], List[str]]:
+    def _uid2root_cat_dist_meta(self, uid: str, with_null_category: bool) -> Tuple[List[Dict[str, float]], List[str]]:
         """
         :return: 2-tuple of (category #entry counts, list of category ordered by time)
         """
@@ -118,15 +118,25 @@ class MycaVisualizer:
             return labels[labels.apply(lambda x: len(x) == 1)].apply(lambda x: x[0])
         root_cats = list(get_all_root_labels(lbs).unique())
         # The original df is sorted by time, hence sorted after `unique`
-        assert NONE_CATEGORY not in root_cats
-        root_cats.append(NONE_CATEGORY)
 
         df.date = df.date.apply(lambda x: pd.Timestamp(x))
+        n_null = df.labels.notnull()
+        append_null = False
         for i, (e_s, e_e) in enumerate(self.itv_edges):
             flag = (e_s <= df.date) & (df.date < e_e)
-            lbs = df[flag].labels.apply(lambda x: x[0] if len(x) == 1 else NONE_CATEGORY)
+            if with_null_category:
+                lbs = df[flag].labels.apply(lambda x: x[0] if len(x) else NONE_CATEGORY)
+            else:
+                flag &= n_null
+                lbs = df[flag].labels.apply(lambda x: x[0])
             ret[i] = c = Counter(lbs)
+            if NONE_CATEGORY in c:
+                append_null = True
             assert len(lbs) == c.total()  # sanity check
+
+        if with_null_category and append_null:
+            assert NONE_CATEGORY not in root_cats
+            root_cats.append(NONE_CATEGORY)
         assert sum(sum(c.values()) for c in ret) == len(df)  # sanity check
         return ret, root_cats
 
@@ -172,70 +182,98 @@ class MycaVisualizer:
         plt.legend()
         plt.show()
 
-    def dist_by_root_category(self, category_order: str = 'count', count_coverage_ratio: int = 0.95):
+    def dist_by_root_category(
+            self, category_order: str = 'count', count_coverage_ratio: int = 0.95, single_user: Union[int, str] = None,
+            with_null_category: bool = False
+    ):
         """
         Stacked histogram on #action items added for each root category overtime
 
         :param category_order: Ordering of stacked categories/legend, one of [`count`, `time`]
         :param count_coverage_ratio: The ratio of total #actions to be covered by the top occurring categories
+        :param single_user: If specified, only plot for the user with the given index or uid
+        :param with_null_category: If True, include the `None` category in the plot
         """
         ca.check_mismatch('Category Plot Order', category_order, ['count', 'time'])
         order_by_count = category_order == 'count'
 
-        for i, uid in enumerate(self.user_ids):
-            fig = plt.figure()
-            ax = plt.gca()
+        is_single_user = single_user is not None
+
+        def plot_single(uid_, ax=None, user_idx: int = None):
+            ax = ax or plt.gca()
             # TODO: If using histogram lib, the time interval has to be the same?
-            meta, root_cats = self._uid2root_cat_dist_meta(uid=uid)
+            meta, root_cats = self._uid2root_cat_dist_meta(uid=uid_, with_null_category=with_null_category)
 
             palette = None
             if order_by_count:
                 total_counts = Counter()
                 for m in meta:
                     total_counts.update(m)
-                mic(total_counts)
                 root_cats_ = [k for k, _ in total_counts.most_common()]
                 assert set(root_cats_) == set(root_cats)  # sanity check
                 root_cats = root_cats_
-                mic(root_cats)
 
                 # Make hues more differentiable for the highest occurring categories
                 cov_ratio = np.cumsum([total_counts[k] for k in root_cats]) / sum(total_counts.values())
-                mic(cov_ratio)
                 n_larger_cat = int(np.searchsorted(cov_ratio, count_coverage_ratio, side='right'))
-                mic(n_larger_cat)
                 palette = sns.color_palette(palette='husl', n_colors=n_larger_cat)
                 # a different palette to differentiate
                 palette += sns.color_palette(palette='RdYlBu', n_colors=len(root_cats) - n_larger_cat)
-                # raise NotImplementedError
 
-            # Order the categories, instead of
-            # df = pd.DataFrame([{k: m.get(k, 0) for k in root_cats} for m in meta])  # So that dataframe is ordered
             rows = []
             # Assign unique date-interval category to each row to enforce bins in histogram
-            date_cats = [f'{i:>2}_{s.date()}_{e.date()}' for i, (s, e) in enumerate(self.itv_edges)]
             date_cats_internal = [f'{i:>2}' for i in range(len(self.itv_edges))]
-            for j, d_c in enumerate(date_cats_internal):
-                rows.extend([{'cat': d_c, 'root_cat': k, 'count': meta[j].get(k, 0)} for k in root_cats])
-            # mic(df)
+            for j_, d_c in enumerate(date_cats_internal):
+                rows.extend([{'cat': d_c, 'root_cat': k, 'count': meta[j_].get(k, 0)} for k in root_cats])
             df = pd.DataFrame(rows)
-            # mic(df.columns, len(df.columns))
-            # df['cat'] = cats = [f'{i:>2}_{s.date()}_{e.date()}' for i, (s, e) in enumerate(self.itv_edges)]
             df_col2cat_col(df, 'cat', date_cats_internal)
-            mic(df, root_cats)
             ax = sns.histplot(
-                data=df, x='cat', weights='count', bins=len(date_cats),
+                data=df, x='cat', weights='count', bins=len(date_cats_internal),
                 discrete=True, multiple='stack', hue='root_cat', palette=palette,
-                # stat='percent',
-                ax=ax
+                ax=ax  # TODO: normalize w.r.t. each time interval?
             )
-            # fig.legend(loc='outside right upper')
-            sns.move_legend(ax, 'upper left', bbox_to_anchor=(1, 1))
-            u_lb = f'User-{i+1}-{uid[:4]}'
-            ax.get_legend().set_title(f'{u_lb}\'s Root Categories, ordered by {category_order.capitalize()}')
-            plt.show()
 
-            raise NotImplementedError
+            # Move tick labels from bin centers to bin edges, map to the time space
+            xt = ax.get_xticks()
+            xt = [t-0.5 for t in xt]
+            xt.append(xt[-1] + 1)
+            edges = [e.strftime('%Y-%m-%d')[2:] for e in self._get_interval_boundaries()]  # Short date
+            assert len(edges) == len(xt)  # sanity check
+
+            interval = 3  # Filter s.t. labels don't overlap
+
+            xt = [e for i, e in enumerate(xt) if i % interval == 0]
+            edges = [e for i, e in enumerate(edges) if i % interval == 0]
+            ax.set_xticks(xt, labels=edges)
+            ax.set_xlim([xt[0], xt[-1]])  # snap to the first and last bins
+
+            plt.xlabel('date')
+            sns.move_legend(ax, 'upper left', bbox_to_anchor=(1, 1))
+            # if not is_single_user:
+            u_lb = 'User-'
+            if user_idx:
+                u_lb += f'{user_idx+1}-'
+            u_lb += uid_[:4]
+            ax.title.set_text(u_lb)
+            ax.get_legend().set_title(f'Root Categories ordered by {category_order.capitalize()}')
+
+        if is_single_user:
+            if isinstance(single_user, int):
+                assert 0 <= single_user < len(self.user_ids)
+                u_idx = single_user
+                single_user = self.user_ids[single_user]
+            else:
+                assert single_user in self.user_ids
+                u_idx = self.user_ids.index(single_user)
+            plt.figure()
+            plot_single(single_user, ax=None, user_idx=u_idx)
+        else:
+            assert len(self.user_ids) == 4  # TODO: generalize
+            fig, axs = plt.subplots(nrows=2, ncols=2, figsize=(12, 8))
+            for j, uid in enumerate(self.user_ids):
+                plot_single(uid, ax=axs[j//2, j % 2], user_idx=j)
+            raise NotImplementedError('Issues; Legend overlaps, plot too small')
+        plt.show()
 
     def _interval_2_plot_centers(self) -> List[pd.Timestamp]:
         return [pd.Timestamp((s.value+e.value)/2) for (s, e) in self.itv_edges]
@@ -260,5 +298,7 @@ if __name__ == '__main__':
     # check_n_label()
 
     def check_root_cat_dist():
-        mv.dist_by_root_category()
+        for i in range(4):
+            mv.dist_by_root_category(single_user=i, with_null_category=True)
+            raise NotImplementedError
     check_root_cat_dist()
