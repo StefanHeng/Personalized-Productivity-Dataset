@@ -3,9 +3,7 @@ auth/
 .DS_Store
 test-lang.py
 myca-dataset/
-flair/
-taggers/
-grouped_data.json
+plot/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

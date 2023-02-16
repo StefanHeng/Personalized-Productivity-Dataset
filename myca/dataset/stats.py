@@ -34,7 +34,7 @@ class MycaVisualizer:
             self, dataset_path: str = None,
             # Inclusive start & end
             start_date: str = '2020-10-01', end_date: str = '2022-08-01', interval: str = '3mo',
-            show_title: bool = True
+            show_title: bool = True, save: bool = False
     ):
         # assert interval == '3mo'
         ca.check_mismatch('Plot Time Interval', interval, ['1mo', '3mo'])
@@ -44,6 +44,8 @@ class MycaVisualizer:
 
         self.dataset_path = dataset_path
         self.user_ids = [stem(f) for f in sorted(glob.iglob(os_join(self.dataset_path, '*.csv')))]
+        # sanity check a shorter code is still unique
+        assert len(set([us[:4] for us in self.user_ids])) == len(self.user_ids)
 
         def load_hier(uid: str):
             path_hier = os_join(self.dataset_path, f'{uid}.json')
@@ -72,6 +74,7 @@ class MycaVisualizer:
         self.plt_colors_by_user = sns.color_palette(palette='husl', n_colors=len(self.user_ids) + 4)
 
         self.show_title = show_title
+        self.save = save  # Plots are saved to disk instead of shown
 
     def _uid2n_label_meta(self, uid: str, levels=None) -> List[Dict[str, float]]:
         """
@@ -163,7 +166,7 @@ class MycaVisualizer:
         for i, uid in enumerate(self.user_ids):
             df = pd.DataFrame(self._uid2n_label_meta(uid=uid, levels=levels))
 
-            u_lb = f'User-{i+1}-{uid[:4]}'
+            u_lb = user_id2str(user_id=uid, index=i)
             c = self.plt_colors_by_user[i]
             args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
             plt.plot(x_centers, df.mu, label=u_lb, **args)
@@ -179,15 +182,19 @@ class MycaVisualizer:
         self._setup_plot_box(ax=ax)
 
         if levels == 'all':
-            lvl_pref = 'All'
+            lvl_pref = 'All-level'
         else:
-            lvl_pref = 'Root' if levels == 0 else ordinal(levels+1)
+            lvl_pref = 'Root-level' if levels == 0 else f'{ordinal(levels+1)}-level'
+        title = f'#{lvl_pref}-Categories over time'
         if self.show_title:
-            plt.title(f'#{lvl_pref}-Categories over time')
+            plt.title(title)
         plt.xlabel('Date')
         plt.ylabel('#Category')
         plt.legend()
-        plt.show()
+        if self.save:
+            save_fig(title)
+        else:
+            plt.show()
 
     def dist_by_root_category(
             self, category_order: str = 'count', count_coverage_ratio: int = 0.9, single_user: Union[int, str] = None,
@@ -257,13 +264,17 @@ class MycaVisualizer:
 
             plt.xlabel('date')
             sns.move_legend(ax, 'upper left', bbox_to_anchor=(1, 1))
-            u_lb = 'User-'
-            if user_idx is not None:
-                u_lb += f'{user_idx+1}-'
-            u_lb += uid_[:4]
+            u_lb = user_id2str(user_id=uid_, index=user_idx)
             ax.title.set_text(u_lb)
-            ax.get_legend().set_title(f'Root Categories ordered by {category_order.capitalize()}')
+            lg = ax.get_legend()
+            lg.set_title(f'Root Categories ordered by {category_order.capitalize()}')
+            root_cats_san = [sanitize_str(c) for c in root_cats]
+            txts = lg.get_texts()
+            assert len(txts) == len(root_cats_san)  # sanity check
+            for t_obj, t in zip(txts, root_cats_san):
+                t_obj.set_text(t)
 
+        title = 'Distribution of #Entry per root category over time'
         if is_single_user:
             if isinstance(single_user, int):
                 assert 0 <= single_user < len(self.user_ids)
@@ -282,8 +293,13 @@ class MycaVisualizer:
             raise NotImplementedError('Issues; Legend overlaps, plot too small')
 
         if self.show_title:
-            plt.suptitle('Distribution of #Entry per root category over time')
-        plt.show()
+            plt.suptitle(title)
+        if self.save:
+            if single_user:
+                title = f'{title} for {single_user}'
+            save_fig(title)
+        else:
+            plt.show()
 
     def n_hierarchy_change(self):
         plt.figure()
@@ -291,20 +307,22 @@ class MycaVisualizer:
         x_centers = self._interval_2_plot_centers()
         for i, uid in enumerate(self.user_ids):
             vals = self._uid2n_hier_ch_meta(uid=uid)
-            mic(vals)
-
-            u_lb = f'User-{i+1}-{uid[:4]}'
+            u_lb = user_id2str(user_id=uid, index=i)
             c = self.plt_colors_by_user[i]
             args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
             plt.plot(x_centers, vals, label=u_lb, **args)
         self._setup_plot_box(ax=ax)
 
+        title = '#Category Hierarchy Shifts over time'
         if self.show_title:
-            plt.title('#Category Hierarchy Shifts over time')
+            plt.title(title)
         plt.xlabel('Date')
         plt.ylabel('#Shift')
         plt.legend()
-        plt.show()
+        if self.save:
+            save_fig(title)
+        else:
+            plt.show()
 
     def _interval_2_plot_centers(self) -> List[pd.Timestamp]:
         return [pd.Timestamp((s.value+e.value)/2) for (s, e) in self.itv_edges]
@@ -315,7 +333,7 @@ class MycaVisualizer:
     def _setup_plot_box(self, ax):
         x_bounds = self._get_interval_boundaries()
         mi, ma = ax.get_ylim()
-        ax.set_ylim([0, ma])  # y-axis starts from 0
+        ax.set_ylim([min(mi, 0), ma])  # y-axis at least starts from 0
 
         args = dict(lw=0.4, color=self.plt_colors_by_user[-1], alpha=0.5)
         plt.vlines(x=x_bounds, ymin=0, ymax=ma, label='Time Interval Boundaries', **args)
@@ -326,23 +344,24 @@ if __name__ == '__main__':
     mic.output_width = 256
 
     dnm = '23-02-10_Aggregated-Dataset'
-    mv = MycaVisualizer(dataset_path=os_join(u.dset_path, dnm), interval='1mo')
+    mv = MycaVisualizer(dataset_path=os_join(u.dset_path, dnm), interval='1mo', show_title=False, save=True)
 
     def check_n_label():
-        # mv.n_label(levels='all')
+        mv.n_label(levels='all')
         mv.n_label(levels=0)
-        # mv.n_label(levels=1)
-        # mv.n_label(levels=2)
-        # mv.n_label(levels=3)
-        # mv.n_label(levels=4)  # The deepest level
+        mv.n_label(levels=1)
+        mv.n_label(levels=2)
+        mv.n_label(levels=3)
+        mv.n_label(levels=4)  # The deepest level
     # check_n_label()
 
     def check_root_cat_dist():
         for i in range(4):
-            mv.dist_by_root_category(single_user=i, with_null_category=True)
-            raise NotImplementedError
-    # check_root_cat_dist()
+            if i == 3:
+                mv.dist_by_root_category(single_user=i, with_null_category=True)
+            # raise NotImplementedError
+    check_root_cat_dist()
 
     def check_n_hierarchy_change():
         mv.n_hierarchy_change()
-    check_n_hierarchy_change()
+    # check_n_hierarchy_change()
