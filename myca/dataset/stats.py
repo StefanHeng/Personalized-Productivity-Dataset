@@ -33,7 +33,8 @@ class MycaVisualizer:
     def __init__(
             self, dataset_path: str = None,
             # Inclusive start & end
-            start_date: str = '2020-10-01', end_date: str = '2022-08-01', interval: str = '3mo'
+            start_date: str = '2020-10-01', end_date: str = '2022-08-01', interval: str = '3mo',
+            show_title: bool = True
     ):
         # assert interval == '3mo'
         ca.check_mismatch('Plot Time Interval', interval, ['1mo', '3mo'])
@@ -68,40 +69,49 @@ class MycaVisualizer:
         # TODO: better ways to plot than merging the last group?
         self.itv_edges[-1] = (s, e+pd.Timedelta(days=1))  # Inclusive end
 
-        self.plt_colors = sns.color_palette(palette='husl', n_colors=len(self.user_ids) + 4)
+        self.plt_colors_by_user = sns.color_palette(palette='husl', n_colors=len(self.user_ids) + 4)
 
-    def _uid2plot_meta(self, uid: str, plot_kind: str = 'n_label', levels=None) -> List[Dict[str, float]]:
+        self.show_title = show_title
+
+    def _uid2n_label_meta(self, uid: str, levels=None) -> List[Dict[str, float]]:
         """
         :return: Plot metadata, indexed by time interval
         """
-        ca.check_mismatch('Plot Kind', plot_kind, ['n_label', 'n_hier_ch'])
+        ret = [[] for _ in self.itv_edges]
+        for dates, d in self.hierarchies[uid].items():
+            dates = json.loads(dates)
+            hier = {int(k): v for k, v in d['hierarchy_graph'].items()}
+            vocab = {int(k): v for k, v in d['vocabulary'].items()}
+            root_idx = [k for k, v in vocab.items() if v == ROOT_HIERARCHY_NAME]
+            assert len(root_idx) == 1  # sanity check
+            root_idx = root_idx[0]
 
-        if plot_kind == 'n_label':
-            ret = [[] for _ in self.itv_edges]
-            for dates, d in self.hierarchies[uid].items():
-                dates = json.loads(dates)
-                hier = {int(k): v for k, v in d['hierarchy_graph'].items()}
-                vocab = {int(k): v for k, v in d['vocabulary'].items()}
-                root_idx = [k for k, v in vocab.items() if v == ROOT_HIERARCHY_NAME]
-                assert len(root_idx) == 1  # sanity check
-                root_idx = root_idx[0]
-
-                if levels == 'all':
-                    n_lb = len(hier) - 1  # exclude root
+            if levels == 'all':
+                n_lb = len(hier) - 1  # exclude root
+            else:
+                if levels == 0:  # root labels
+                    n_lb = len(hier[root_idx])
                 else:
-                    if levels == 0:  # root labels
-                        n_lb = len(hier[root_idx])
-                    else:
-                        # root is arbitrary, root-level children, should be 0 depth, not 1 in most trees/graphs
-                        lb2depth = {lb: len(path2root(graph=hier, root=root_idx, target=lb)) - 2 for lb in hier.keys()}
-                        n_lb = len([lb for lb, p_len in lb2depth.items() if p_len == levels])
+                    # root is arbitrary, root-level children, should be 0 depth, not 1 in most trees/graphs
+                    lb2depth = {lb: len(path2root(graph=hier, root=root_idx, target=lb)) - 2 for lb in hier.keys()}
+                    n_lb = len([lb for lb, p_len in lb2depth.items() if p_len == levels])
 
-                d_st, d_ed = dates[0], dates[-1]
-                # If the hierarchy stays the same across multiple intervals, it will be counted multiple times
-                for i_, (e_s, e_e) in enumerate(self.itv_edges):
-                    if pd.Timestamp(d_st) < e_e and pd.Timestamp(d_ed) >= e_s:
-                        ret[i_].append(n_lb)
-            return [dict(mu=np.mean(n), sig=stats.stdev(n), mi=min(n), ma=max(n)) for n in ret]
+            d_st, d_ed = pd.Timestamp(dates[0]), pd.Timestamp(dates[-1])
+            # If the hierarchy stays the same across multiple intervals, it will be counted multiple times
+            for i_, (e_s, e_e) in enumerate(self.itv_edges):
+                if d_st < e_e and e_s <= d_ed:  # Exclusive end for time interval
+                    ret[i_].append(n_lb)
+        return [dict(mu=np.mean(n), sig=stats.stdev(n), mi=min(n), ma=max(n)) for n in ret]
+
+    def _uid2n_hier_ch_meta(self, uid: str) -> List[int]:
+        ret = [0 for _ in self.itv_edges]
+        for dates in self.hierarchies[uid].keys():
+            dates = json.loads(dates)
+            d_st, d_ed = pd.Timestamp(dates[0]), pd.Timestamp(dates[-1])
+            for i_, (e_s, e_e) in enumerate(self.itv_edges):  # Get #unique hierarchies
+                if d_st < e_e and e_s <= d_ed:
+                    ret[i_] += 1
+        return [c-1 for c in ret]  # For #change
 
     def _uid2root_cat_dist_meta(self, uid: str, with_null_category: bool) -> Tuple[List[Dict[str, float]], List[str]]:
         """
@@ -149,13 +159,14 @@ class MycaVisualizer:
         plt.figure()
         ax = plt.gca()
         x_bounds = self._get_interval_boundaries()
+        x_centers = self._interval_2_plot_centers()
         for i, uid in enumerate(self.user_ids):
-            df = pd.DataFrame(self._uid2plot_meta(uid=uid, plot_kind='n_label', levels=levels))
+            df = pd.DataFrame(self._uid2n_label_meta(uid=uid, levels=levels))
 
             u_lb = f'User-{i+1}-{uid[:4]}'
-            c = self.plt_colors[i]
+            c = self.plt_colors_by_user[i]
             args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
-            plt.plot(self._interval_2_plot_centers(), df.mu, label=u_lb, **args)
+            plt.plot(x_centers, df.mu, label=u_lb, **args)
             assert len(df.sig) + 1 == len(x_bounds)
             for j, row in df.iterrows():
                 j: int
@@ -165,25 +176,21 @@ class MycaVisualizer:
                 plt.plot(x_bounds[j:j+2], [row.mi, row.mi], alpha=0.5, **args)
                 plt.plot(x_bounds[j:j+2], [row.ma, row.ma], alpha=0.5, **args)
 
-        mi, ma = ax.get_ylim()
-        ax.set_ylim([0, ma])  # y-axis starts from 0
-
-        args = dict(lw=0.4, color=self.plt_colors[-1], alpha=0.5)
-        plt.vlines(x=x_bounds, ymin=0, ymax=ma, label='Time Interval Boundaries', **args)
-        ax.set_xlim([x_bounds[0], x_bounds[-1]])
+        self._setup_plot_box(ax=ax)
 
         if levels == 'all':
-            lvl_desc = 'All Levels'
+            lvl_pref = 'All'
         else:
-            lvl_desc = 'Root Labels' if levels == 0 else f'{ordinal(levels+1)} Level'
-        plt.title(f'#Categories over time on {lvl_desc}')
+            lvl_pref = 'Root' if levels == 0 else ordinal(levels+1)
+        if self.show_title:
+            plt.title(f'#{lvl_pref}-Categories over time')
         plt.xlabel('Date')
-        plt.ylabel('#Categoriy')
+        plt.ylabel('#Category')
         plt.legend()
         plt.show()
 
     def dist_by_root_category(
-            self, category_order: str = 'count', count_coverage_ratio: int = 0.95, single_user: Union[int, str] = None,
+            self, category_order: str = 'count', count_coverage_ratio: int = 0.9, single_user: Union[int, str] = None,
             with_null_category: bool = False
     ):
         """
@@ -237,7 +244,7 @@ class MycaVisualizer:
             xt = ax.get_xticks()
             xt = [t-0.5 for t in xt]
             xt.append(xt[-1] + 1)
-            edges = [e.strftime('%Y-%m-%d')[2:] for e in self._get_interval_boundaries()]  # Short date
+            edges = [e.strftime('%Y-%m-%d') for e in self._get_interval_boundaries()]  # Short date
             assert len(edges) == len(xt)  # sanity check
 
             interval = 3  # Filter s.t. labels don't overlap
@@ -245,13 +252,13 @@ class MycaVisualizer:
             xt = [e for i, e in enumerate(xt) if i % interval == 0]
             edges = [e for i, e in enumerate(edges) if i % interval == 0]
             ax.set_xticks(xt, labels=edges)
+            plt.xticks(rotation=45)
             ax.set_xlim([xt[0], xt[-1]])  # snap to the first and last bins
 
             plt.xlabel('date')
             sns.move_legend(ax, 'upper left', bbox_to_anchor=(1, 1))
-            # if not is_single_user:
             u_lb = 'User-'
-            if user_idx:
+            if user_idx is not None:
                 u_lb += f'{user_idx+1}-'
             u_lb += uid_[:4]
             ax.title.set_text(u_lb)
@@ -273,6 +280,30 @@ class MycaVisualizer:
             for j, uid in enumerate(self.user_ids):
                 plot_single(uid, ax=axs[j//2, j % 2], user_idx=j)
             raise NotImplementedError('Issues; Legend overlaps, plot too small')
+
+        if self.show_title:
+            plt.suptitle('Distribution of #Entry per root category over time')
+        plt.show()
+
+    def n_hierarchy_change(self):
+        plt.figure()
+        ax = plt.gca()
+        x_centers = self._interval_2_plot_centers()
+        for i, uid in enumerate(self.user_ids):
+            vals = self._uid2n_hier_ch_meta(uid=uid)
+            mic(vals)
+
+            u_lb = f'User-{i+1}-{uid[:4]}'
+            c = self.plt_colors_by_user[i]
+            args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
+            plt.plot(x_centers, vals, label=u_lb, **args)
+        self._setup_plot_box(ax=ax)
+
+        if self.show_title:
+            plt.title('#Category Hierarchy Shifts over time')
+        plt.xlabel('Date')
+        plt.ylabel('#Shift')
+        plt.legend()
         plt.show()
 
     def _interval_2_plot_centers(self) -> List[pd.Timestamp]:
@@ -280,6 +311,15 @@ class MycaVisualizer:
 
     def _get_interval_boundaries(self) -> List[pd.Timestamp]:
         return [self.itv_edges[0][0]] + [e for (s, e) in self.itv_edges]
+
+    def _setup_plot_box(self, ax):
+        x_bounds = self._get_interval_boundaries()
+        mi, ma = ax.get_ylim()
+        ax.set_ylim([0, ma])  # y-axis starts from 0
+
+        args = dict(lw=0.4, color=self.plt_colors_by_user[-1], alpha=0.5)
+        plt.vlines(x=x_bounds, ymin=0, ymax=ma, label='Time Interval Boundaries', **args)
+        ax.set_xlim([x_bounds[0], x_bounds[-1]])
 
 
 if __name__ == '__main__':
@@ -301,4 +341,8 @@ if __name__ == '__main__':
         for i in range(4):
             mv.dist_by_root_category(single_user=i, with_null_category=True)
             raise NotImplementedError
-    check_root_cat_dist()
+    # check_root_cat_dist()
+
+    def check_n_hierarchy_change():
+        mv.n_hierarchy_change()
+    check_n_hierarchy_change()
