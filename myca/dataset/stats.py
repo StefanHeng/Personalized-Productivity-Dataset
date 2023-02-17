@@ -7,12 +7,16 @@ import glob
 import statistics as stats
 from os.path import join as os_join
 from typing import List, Tuple, Dict, Union, Any
+from dataclasses import dataclass
 from collections import Counter
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 import seaborn as sns
+import zss
+from zss import Node
+from tqdm.auto import tqdm
 
 from stefutil import *
 from myca.util import *
@@ -22,6 +26,20 @@ from myca.dataset.clean import ROOT_HIERARCHY_NAME, path2root
 # assign them to a `None` category, see `dist_by_root_category`
 # NONE_CATEGORY = '__NONE__'
 NONE_CATEGORY = '<NONE>'
+
+
+@dataclass
+class HierarchyMeta:
+    tree: Dict[int, List[int]] = None
+    root_node: int = None
+
+    def to_str_nodes(self) -> Dict[str, Any]:
+        return dict(
+            tree={str(k): [str(v_) for v_ in v] for k, v in self.tree.items()}, root_node=str(self.root_node)
+        )
+
+
+logger = get_logger('Myca Visualizer')
 
 
 class MycaVisualizer:
@@ -83,11 +101,8 @@ class MycaVisualizer:
         ret = [[] for _ in self.itv_edges]
         for dates, d in self.hierarchies[uid].items():
             dates = json.loads(dates)
-            hier = {int(k): v for k, v in d['hierarchy_graph'].items()}
-            vocab = {int(k): v for k, v in d['vocabulary'].items()}
-            root_idx = [k for k, v in vocab.items() if v == ROOT_HIERARCHY_NAME]
-            assert len(root_idx) == 1  # sanity check
-            root_idx = root_idx[0]
+            out = MycaVisualizer.user_hierarchy_meta2tree(d)
+            hier, root_idx = out.tree, out.root_node
 
             if levels == 'all':
                 n_lb = len(hier) - 1  # exclude root
@@ -106,15 +121,86 @@ class MycaVisualizer:
                     ret[i_].append(n_lb)
         return [dict(mu=np.mean(n), sig=stats.stdev(n), mi=min(n), ma=max(n)) for n in ret]
 
-    def _uid2n_hier_ch_meta(self, uid: str) -> List[int]:
-        ret = [0 for _ in self.itv_edges]
-        for dates in self.hierarchies[uid].keys():
-            dates = json.loads(dates)
+    @staticmethod
+    def user_hierarchy_meta2tree(d: Dict[str, Any]) -> HierarchyMeta:
+        hier = {int(k): [int(v_) for v_ in v] for k, v in d['hierarchy_graph'].items()}
+        vocab = {int(k): v for k, v in d['vocabulary'].items()}
+        root_idx = [k for k, v in vocab.items() if v == ROOT_HIERARCHY_NAME]
+        assert len(root_idx) == 1  # sanity check
+        root_idx = root_idx[0]
+        return HierarchyMeta(tree=hier, root_node=root_idx)
+
+    def _uid2n_hier_ch_meta(self, uid: str, change_kind: str) -> Union[List[int], List[Dict[str, int]]]:
+        whole_counts = [0 for _ in self.itv_edges]
+
+        lst_dates_by_itv: List[List[str]] = [[] for _ in self.itv_edges]
+        for k_dates in self.hierarchies[uid].keys():
+            dates = json.loads(k_dates)
             d_st, d_ed = pd.Timestamp(dates[0]), pd.Timestamp(dates[-1])
             for i_, (e_s, e_e) in enumerate(self.itv_edges):  # Get #unique hierarchies
                 if d_st < e_e and e_s <= d_ed:
-                    ret[i_] += 1
-        return [c-1 for c in ret]  # For #change
+                    whole_counts[i_] += 1
+                    lst_dates_by_itv[i_].append(dates)
+        if change_kind == 'single':
+            d_by_itv = [Counter() for _ in self.itv_edges]
+            op2str_op = {zss.Operation.insert: 'add', zss.Operation.remove: 'delete', zss.Operation.update: 'rename'}
+            for i_, lst_dates in enumerate(lst_dates_by_itv):
+                it = tqdm(zip(lst_dates[:-1], lst_dates[1:]), desc='Counting edits', total=len(lst_dates)-1)
+                for d_prev, d_curr in it:
+                    d_hier = self.hierarchies[uid]
+                    out_prev = MycaVisualizer.user_hierarchy_meta2tree(d_hier[json.dumps(d_prev)])
+                    out_curr = MycaVisualizer.user_hierarchy_meta2tree(d_hier[json.dumps(d_curr)])
+                    tr_prev = MycaVisualizer._hierarchy2zss_tree(out_prev)
+                    tr_curr = MycaVisualizer._hierarchy2zss_tree(out_curr)
+
+                    # Since the hierarchy is digital anyway, any kind of edit has the same cost
+                    cost, ops = zss.distance(
+                        tr_prev, tr_curr, get_children=Node.get_children, return_operations=True,
+                        insert_cost=(lambda x: 1), remove_cost=(lambda x: 1), update_cost=(lambda x, y: 1)
+                    )
+                    # `match` looks like internal var for zss DP implementation'
+                    ops: List[zss.Operation] = [op for op in ops if op != zss.Operation(zss.Operation.match)]
+                    ops_s: List[str] = [op2str_op[op.type] for op in ops]
+                    if cost != len(ops):
+                        mic(out_prev.tree, out_curr.tree)
+                        mic(cost, ops, len(ops))
+                        # raise NotImplementedError
+                        logger.warning(f'Cost does not match #ops: {pl.i(cost)} != {pl.i(len(ops))}')
+                    # assert cost == len(ops)  # sanity check
+                    # mic(ops_s)
+                    d_by_itv[i_].update(ops_s)
+                    # mic(d_by_itv[i_])
+                    # raise NotImplementedError
+            return [dict(d) for d in d_by_itv]
+        else:  # `whole`
+            return [c-1 for c in whole_counts]  # For #change
+
+    @staticmethod
+    def _hierarchy2zss_tree(hierarchy: HierarchyMeta) -> Node:
+        """
+        :param hierarchy: Adjacency list of category hierarchy read in from file
+        """
+        # Convert all notes to str for `zss`
+        tree = {str(k): [str(v_) for v_ in v] for k, v in hierarchy.tree.items()}
+        str_node2node: Dict[str, Node] = {}
+        # mic(tree)
+        for node, children in tree.items():
+            n = str_node2node[node] = str_node2node.get(node, Node(node))  # Creates the node if not exists
+            for child in children:
+                c = str_node2node[child] = str_node2node.get(child, Node(child))
+                n.addkid(c)
+
+        sanity_check = False
+        if sanity_check:
+            tree_recon = dict()
+            n_root = str_node2node[str(hierarchy.root_node)]
+            to_visit = [n_root]
+            while len(to_visit) > 0:
+                n = to_visit.pop()
+                tree_recon[n.label] = [c.label for c in n.children]
+                to_visit.extend(n.children)
+            assert tree_recon == tree
+        return str_node2node[str(hierarchy.root_node)]
 
     def _uid2root_cat_dist_meta(self, uid: str, with_null_category: bool) -> Tuple[List[Dict[str, float]], List[str]]:
         """
@@ -296,21 +382,34 @@ class MycaVisualizer:
             plt.suptitle(title)
         if self.save:
             if single_user:
-                title = f'{title} for {single_user}'
+                title = f'{title} for {user_id2str(user_id=single_user, index=u_idx)}'
             save_fig(title)
         else:
             plt.show()
 
-    def n_hierarchy_change(self):
+    def n_hierarchy_change(self, change_kind: str = 'single'):
+        """
+        :param change_kind: The kind of hierarchy change to plot, one of [`single`, `whole`]
+            If `single`, plots the 3 specific kinds of tree edits for every single hierarchy change
+            If `whole`, plots the total number of hierarchy changes
+        """
         plt.figure()
         ax = plt.gca()
         x_centers = self._interval_2_plot_centers()
         for i, uid in enumerate(self.user_ids):
-            vals = self._uid2n_hier_ch_meta(uid=uid)
-            u_lb = user_id2str(user_id=uid, index=i)
-            c = self.plt_colors_by_user[i]
-            args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
-            plt.plot(x_centers, vals, label=u_lb, **args)
+            meta = self._uid2n_hier_ch_meta(uid=uid, change_kind=change_kind)
+            if change_kind == 'single':
+                raise NotImplementedError('TODO: too many RENAMEs???  Tree edit algorithm wrong?')
+                df = pd.DataFrame(meta)
+                mic(df)
+                for k in df.columns:
+                    plt.plot(x_centers, df[k], label=k, **LN_KWARGS)
+                break
+            else:
+                u_lb = user_id2str(user_id=uid, index=i)
+                c = self.plt_colors_by_user[i]
+                args = LN_KWARGS | dict(ms=2, c=c, lw=0.7)
+                plt.plot(x_centers, meta, label=u_lb, **args)
         self._setup_plot_box(ax=ax)
 
         title = '#Category Hierarchy Shifts over time'
@@ -344,7 +443,7 @@ if __name__ == '__main__':
     mic.output_width = 256
 
     dnm = '23-02-10_Aggregated-Dataset'
-    mv = MycaVisualizer(dataset_path=os_join(u.dset_path, dnm), interval='1mo', show_title=False, save=True)
+    mv = MycaVisualizer(dataset_path=os_join(u.dset_path, dnm), interval='1mo', show_title=False, save=False)
 
     def check_n_label():
         mv.n_label(levels='all')
@@ -357,11 +456,10 @@ if __name__ == '__main__':
 
     def check_root_cat_dist():
         for i in range(4):
-            if i == 3:
-                mv.dist_by_root_category(single_user=i, with_null_category=True)
+            mv.dist_by_root_category(single_user=i, with_null_category=True)
             # raise NotImplementedError
-    check_root_cat_dist()
+    # check_root_cat_dist()
 
     def check_n_hierarchy_change():
-        mv.n_hierarchy_change()
-    # check_n_hierarchy_change()
+        mv.n_hierarchy_change(change_kind='whole')
+    check_n_hierarchy_change()
